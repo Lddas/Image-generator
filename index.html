@@ -41,6 +41,8 @@
     .attachment img { width:44px; height:44px; border-radius:7px; object-fit:cover; }
     .attachment span { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:#c6ccd7; }
     .attachment button { width:26px; height:26px; padding:0; margin-left:4px; border-radius:50%; background:#2a2f3a; font-size:17px; }
+    .input-tools { display:flex; align-items:center; gap:10px; }
+    .uploadbtn { display:inline-flex; align-items:center; width:auto; padding:9px 13px; background:#262b36; color:#d4d8e1; font-size:13px; font-weight:600; }
     @media (max-width: 720px) { .row { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -49,6 +51,7 @@
     <h1>Seedream</h1>
     <p class="sub">Generate or modify images locally. Every result is saved to <code>outputs/</code>.</p>
     <form id="form">
+      <div class="input-tools"><button class="uploadbtn" id="uploadButton" type="button">Upload input image</button><input id="uploadInput" type="file" accept="image/*" hidden /></div>
       <div class="attachment" id="attachment" hidden><img id="attachmentImage" alt="Selected input" /><span id="attachmentName"></span><button id="removeAttachment" type="button" aria-label="Remove input image">×</button></div>
       <label>Prompt<textarea id="prompt" required autofocus placeholder="Describe the image you want…"></textarea></label>
       <div class="row">
@@ -96,9 +99,41 @@
       attachment.hidden = !image;
       if (image) {
         document.getElementById('attachmentImage').src = image.url;
-        document.getElementById('attachmentName').textContent = image.name;
+        document.getElementById('attachmentName').textContent = image.display_name || image.name;
       }
     }
+
+    function fileDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Could not read the selected image'));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    document.getElementById('uploadButton').addEventListener('click', () => document.getElementById('uploadInput').click());
+    document.getElementById('uploadInput').addEventListener('change', async (event) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file) return;
+      status.className = '';
+      status.textContent = 'Uploading input image…';
+      try {
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: file.name, data: await fileDataUrl(file) })
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || 'Upload failed');
+        setInput(data.image);
+        status.textContent = 'Input image attached.';
+      } catch (error) {
+        status.className = 'error';
+        status.textContent = error.message;
+      }
+    });
 
     function closeLightbox() {
       lightbox.hidden = true;
@@ -113,14 +148,12 @@
     }
 
     async function deleteImage(name) {
-      if (selectedInput?.name === name) {
-        throw new Error('Detach this image from the prompt before deleting it.');
-      }
       if (!window.confirm(`Delete ${name}? The file will be moved to outputs/.trash/ so it can be recovered.`)) return;
       const response = await fetch('/api/images/' + encodeURIComponent(name), { method: 'DELETE' });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || 'Delete failed');
       gallery.querySelector(`[data-name="${CSS.escape(name)}"]`)?.remove();
+      if (selectedInput?.name === name) setInput(null);
       if (expandedName === name) closeLightbox();
     }
 

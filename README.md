@@ -4,7 +4,9 @@ A tiny, dependency-free local app that sends prompts to BytePlus ModelArk/Seedre
 
 Generated images persist across page reloads and server restarts. Deleting an
 image in the UI moves it to `outputs/.trash/` rather than permanently erasing
-it. Images currently attached as model input must be detached before deletion.
+it. Deleting an attached image automatically removes it from the prompt.
+Uploaded reference images are saved automatically under `inputs/`; that folder
+is also created at runtime and ignored by Git.
 
 ## Start
 
@@ -26,6 +28,7 @@ seedream-image-generator/
 ├── env.example          # safe template committed to Git
 ├── index.html           # browser UI
 ├── server.py            # local server and Seedream API client
+├── inputs/              # created automatically for uploaded input images
 └── outputs/             # created automatically at runtime; ignored by Git
 ```
 

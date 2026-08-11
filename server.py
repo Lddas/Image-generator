@@ -19,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 OUTPUTS = ROOT / "outputs"
+INPUTS = ROOT / "inputs"
 LEDGER = ROOT / ".cost-ledger.json"
 DEFAULT_BASE = "https://ark.ap-southeast.bytepluses.com/api/v3"
 DEFAULT_MODEL = "dola-seedream-5-0-pro-260628"
@@ -63,7 +64,7 @@ def redact(text: str) -> str:
 def post_json(url: str, body: dict, timeout: int = 360) -> dict:
     key = api_key()
     if not key:
-        raise RuntimeError("Missing ARK_API_KEY or SEEDANCE_API_KEY in .env")
+        raise RuntimeError("Missing ARK_API_KEY or SEEDANCE_API_KEY in env")
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
@@ -108,8 +109,10 @@ def download_image(item: dict, index: int) -> dict:
 
 
 def image_data_uri(name: str) -> str:
-    safe_name = Path(name).name
-    path = OUTPUTS / safe_name
+    requested = Path(name)
+    safe_name = requested.name
+    folder = INPUTS if requested.parts[:1] == ("inputs",) else OUTPUTS
+    path = folder / safe_name
     if not safe_name or not path.is_file():
         raise RuntimeError("Selected input image no longer exists")
     mime = mimetypes.guess_type(safe_name)[0] or "image/png"
@@ -211,6 +214,40 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(200, {"ok": True, "deleted": name, "recoverable_at": str(trashed)})
 
     def do_POST(self) -> None:
+        if self.path == "/api/upload":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                request_data = json.loads(self.rfile.read(length) or b"{}")
+                original = Path(str(request_data.get("name") or "upload.png")).name
+                data_url = str(request_data.get("data") or "")
+                match = re.fullmatch(r"data:(image/[A-Za-z0-9.+-]+);base64,(.+)", data_url, flags=re.S)
+                if not match:
+                    self._json(400, {"ok": False, "error": "A valid image file is required"})
+                    return
+                raw = base64.b64decode(match.group(2), validate=True)
+                if len(raw) > 25 * 1024 * 1024:
+                    self._json(400, {"ok": False, "error": "Image must be 25 MB or smaller"})
+                    return
+                ext = Path(original).suffix.lower()
+                if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
+                    ext = ".png"
+                stem = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(original).stem).strip("-")[:50] or "upload"
+                INPUTS.mkdir(exist_ok=True)
+                saved_name = f"{stem}_{uuid.uuid4().hex[:6]}{ext}"
+                (INPUTS / saved_name).write_bytes(raw)
+                self._json(200, {
+                    "ok": True,
+                    "image": {
+                        "name": f"inputs/{saved_name}",
+                        "display_name": original,
+                        "url": f"/inputs/{saved_name}",
+                    },
+                })
+            except (ValueError, json.JSONDecodeError, base64.binascii.Error) as exc:
+                self._json(400, {"ok": False, "error": f"Invalid upload: {exc}"})
+            except Exception as exc:
+                self._json(500, {"ok": False, "error": redact(str(exc))})
+            return
         if self.path != "/api/generate":
             self._json(404, {"ok": False, "error": "Not found"})
             return
@@ -270,6 +307,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     OUTPUTS.mkdir(exist_ok=True)
+    INPUTS.mkdir(exist_ok=True)
     print(f"Seedream image generator: http://127.0.0.1:{PORT}")
     print(f"Outputs: {OUTPUTS}")
     print(f"API key: {'configured' if api_key() else 'MISSING'}")

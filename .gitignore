@@ -2,6 +2,7 @@
 env
 .cost-ledger.json
 outputs/*
+inputs/*
 __pycache__/
 *.pyc
 .DS_Store

@@ -103,15 +103,6 @@
       }
     }
 
-    function fileDataUrl(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(new Error('Could not read the selected image'));
-        reader.readAsDataURL(file);
-      });
-    }
-
     document.getElementById('uploadButton').addEventListener('click', () => document.getElementById('uploadInput').click());
     document.getElementById('uploadInput').addEventListener('change', async (event) => {
       const file = event.target.files?.[0];
@@ -120,10 +111,10 @@
       status.className = '';
       status.textContent = 'Uploading input image…';
       try {
-        const response = await fetch('/api/upload', {
+        const response = await fetch('/api/upload?name=' + encodeURIComponent(file.name), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: file.name, data: await fileDataUrl(file) })
+          headers: { 'Content-Type': file.type || 'application/octet-stream' },
+          body: file
         });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || 'Upload failed');

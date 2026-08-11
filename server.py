@@ -10,6 +10,7 @@ import os
 import re
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timezone
@@ -214,23 +215,23 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(200, {"ok": True, "deleted": name, "recoverable_at": str(trashed)})
 
     def do_POST(self) -> None:
-        if self.path == "/api/upload":
+        parsed_path = urllib.parse.urlsplit(self.path)
+        if parsed_path.path == "/api/upload":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                request_data = json.loads(self.rfile.read(length) or b"{}")
-                original = Path(str(request_data.get("name") or "upload.png")).name
-                data_url = str(request_data.get("data") or "")
-                match = re.fullmatch(r"data:(image/[A-Za-z0-9.+-]+);base64,(.+)", data_url, flags=re.S)
-                if not match:
-                    self._json(400, {"ok": False, "error": "A valid image file is required"})
+                if length <= 0:
+                    self._json(400, {"ok": False, "error": "An image file is required"})
                     return
-                raw = base64.b64decode(match.group(2), validate=True)
-                if len(raw) > 25 * 1024 * 1024:
-                    self._json(400, {"ok": False, "error": "Image must be 25 MB or smaller"})
+                if length > 25 * 1024 * 1024:
+                    self._json(413, {"ok": False, "error": "Image must be 25 MB or smaller"})
                     return
+                raw = self.rfile.read(length)
+                query = urllib.parse.parse_qs(parsed_path.query)
+                original = Path(query.get("name", ["upload.png"])[0]).name
                 ext = Path(original).suffix.lower()
                 if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
-                    ext = ".png"
+                    mime_ext = mimetypes.guess_extension(self.headers.get_content_type())
+                    ext = mime_ext if mime_ext in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"} else ".png"
                 stem = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(original).stem).strip("-")[:50] or "upload"
                 INPUTS.mkdir(exist_ok=True)
                 saved_name = f"{stem}_{uuid.uuid4().hex[:6]}{ext}"
@@ -243,7 +244,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "url": f"/inputs/{saved_name}",
                     },
                 })
-            except (ValueError, json.JSONDecodeError, base64.binascii.Error) as exc:
+            except (ValueError, OSError) as exc:
                 self._json(400, {"ok": False, "error": f"Invalid upload: {exc}"})
             except Exception as exc:
                 self._json(500, {"ok": False, "error": redact(str(exc))})

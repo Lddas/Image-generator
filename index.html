@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Seedream Image Generator</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #0d0f14; color: #f4f5f7; }
+    main { width: min(1100px, calc(100% - 32px)); margin: 48px auto; }
+    h1 { margin: 0 0 8px; font-size: clamp(28px, 5vw, 52px); }
+    .sub { color: #9ca3af; margin: 0 0 28px; }
+    .cost { display:flex; gap:5px; justify-content:center; align-items:center; font-size:11px; color:#8f97a6; white-space:nowrap; }
+    .cost b { color:#b7becb; font-weight:600; }
+    form { display: grid; gap: 14px; padding: 20px; border: 1px solid #292e3a; border-radius: 16px; background: #151820; }
+    textarea, select, input { width: 100%; border: 1px solid #343a49; border-radius: 10px; background: #0f1218; color: inherit; padding: 12px; font: inherit; }
+    textarea { min-height: 130px; resize: vertical; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:end; }
+    .generate-action { display:grid; gap:6px; width:min(460px, 100%); margin:4px auto 0; }
+    .generate-action button { width:100%; }
+    label { display: grid; gap: 7px; color: #bbc1ce; font-size: 13px; }
+    button { border: 0; border-radius: 10px; background: #ff6b35; color: #fff; font: 700 15px inherit; padding: 13px 22px; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    #status { min-height: 24px; color: #aeb6c6; }
+    #status.error { color: #ff8f8f; }
+    .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-top: 24px; }
+    figure { position: relative; margin: 0; overflow: hidden; border-radius: 14px; border: 1px solid #292e3a; background: #151820; }
+    figure img { width: 100%; display: block; aspect-ratio: 1; object-fit: cover; cursor: zoom-in; }
+    figure.is-selected { border-color:#ff6b35; box-shadow:0 0 0 2px rgba(255,107,53,.22); }
+    figure.is-selected::after { content:'Input'; position:absolute; left:9px; top:9px; padding:4px 7px; border-radius:999px; background:#ff6b35; color:#fff; font-size:11px; font-weight:700; }
+    figcaption { padding: 10px 12px; color: #9ca3af; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .delete { position:absolute; top:9px; right:9px; width:32px; height:32px; padding:0; border-radius:50%; background:rgba(10,12,16,.78); font-size:20px; line-height:1; z-index:2; }
+    .delete:hover { background:#d84242; }
+    .lightbox { position:fixed; inset:0; z-index:20; display:grid; place-items:center; padding:28px; background:rgba(0,0,0,.88); cursor:zoom-out; }
+    .lightbox[hidden] { display:none; }
+    .lightbox img { max-width:100%; max-height:100%; object-fit:contain; box-shadow:0 18px 70px #000; cursor:default; }
+    .lightbox .delete { position:fixed; top:20px; right:20px; cursor:pointer; }
+    .attachment { display:flex; align-items:center; gap:10px; width:max-content; max-width:100%; padding:7px; border:1px solid #ff6b35; border-radius:10px; background:#11141b; }
+    .attachment[hidden] { display:none; }
+    .attachment img { width:44px; height:44px; border-radius:7px; object-fit:cover; }
+    .attachment span { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:#c6ccd7; }
+    .attachment button { width:26px; height:26px; padding:0; margin-left:4px; border-radius:50%; background:#2a2f3a; font-size:17px; }
+    @media (max-width: 720px) { .row { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Seedream</h1>
+    <p class="sub">Generate or modify images locally. Every result is saved to <code>outputs/</code>.</p>
+    <form id="form">
+      <div class="attachment" id="attachment" hidden><img id="attachmentImage" alt="Selected input" /><span id="attachmentName"></span><button id="removeAttachment" type="button" aria-label="Remove input image">×</button></div>
+      <label>Prompt<textarea id="prompt" required autofocus placeholder="Describe the image you want…"></textarea></label>
+      <div class="row">
+        <label>Model<select id="model"><option value="dola-seedream-5-0-pro-260628">Seedream 5.0 Pro</option><option value="seedream-5-0-lite-260128">Seedream 5.0 Lite</option></select></label>
+        <label>Size<select id="size"><option selected>2K</option><option>3K</option><option>4K</option></select></label>
+      </div>
+      <div class="generate-action"><button id="submit" type="submit">Generate</button><span class="cost" id="cost"><span id="nextCost">$0.090 this run</span><span>·</span><b>$0.070 total</b></span></div>
+      <div id="status" role="status" aria-live="polite"></div>
+    </form>
+    <section class="gallery" id="gallery" aria-label="Generated images"></section>
+    <div class="lightbox" id="lightbox" hidden role="dialog" aria-label="Image preview">
+      <button class="delete" id="lightboxDelete" type="button" aria-label="Delete image">×</button>
+      <img id="lightboxImage" alt="Expanded generated image" />
+    </div>
+  </main>
+  <script>
+    const form = document.getElementById('form');
+    const status = document.getElementById('status');
+    const submit = document.getElementById('submit');
+    const gallery = document.getElementById('gallery');
+    const lightbox = document.getElementById('lightbox');
+    const lightboxImage = document.getElementById('lightboxImage');
+    const lightboxDelete = document.getElementById('lightboxDelete');
+    let expandedName = '';
+    let selectedInput = null;
+    let clickTimer = null;
+
+    function renderCost(cost) {
+      const value = Number(cost?.total_usd || 0);
+      document.querySelector('#cost b').textContent = '$' + value.toFixed(3);
+      document.getElementById('cost').title = `${cost?.generated_images || 0} billed image(s) across ${cost?.calls || 0} API call(s)`;
+    }
+
+    function renderEstimate() {
+      const model = document.getElementById('model').value;
+      const size = document.getElementById('size').value;
+      const unit = model.includes('lite') ? 0.035 : (size === '2K' ? 0.09 : 0.09);
+      document.getElementById('nextCost').textContent = '$' + unit.toFixed(3) + ' this run';
+    }
+
+    function setInput(image) {
+      selectedInput = image;
+      document.querySelectorAll('.gallery figure').forEach((figure) => figure.classList.toggle('is-selected', figure.dataset.name === image?.name));
+      const attachment = document.getElementById('attachment');
+      attachment.hidden = !image;
+      if (image) {
+        document.getElementById('attachmentImage').src = image.url;
+        document.getElementById('attachmentName').textContent = image.name;
+      }
+    }
+
+    function closeLightbox() {
+      lightbox.hidden = true;
+      lightboxImage.removeAttribute('src');
+      expandedName = '';
+    }
+
+    function openLightbox(image) {
+      expandedName = image.name;
+      lightboxImage.src = image.url;
+      lightbox.hidden = false;
+    }
+
+    async function deleteImage(name) {
+      if (selectedInput?.name === name) {
+        throw new Error('Detach this image from the prompt before deleting it.');
+      }
+      if (!window.confirm(`Delete ${name}? The file will be moved to outputs/.trash/ so it can be recovered.`)) return;
+      const response = await fetch('/api/images/' + encodeURIComponent(name), { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || 'Delete failed');
+      gallery.querySelector(`[data-name="${CSS.escape(name)}"]`)?.remove();
+      if (expandedName === name) closeLightbox();
+    }
+
+    function addImage(image, prepend = true) {
+      if (gallery.querySelector(`[data-name="${CSS.escape(image.name)}"]`)) return;
+      const figure = document.createElement('figure');
+      figure.dataset.name = image.name;
+      figure.innerHTML = `<button class="delete" type="button" aria-label="Delete ${image.name}">×</button><img src="${image.url}" alt="Generated image" /><figcaption>${image.name}</figcaption>`;
+      figure.querySelector('img').addEventListener('click', () => {
+        clearTimeout(clickTimer);
+        clickTimer = setTimeout(() => setInput(selectedInput?.name === image.name ? null : image), 220);
+      });
+      figure.querySelector('img').addEventListener('dblclick', () => {
+        clearTimeout(clickTimer);
+        openLightbox(image);
+      });
+      figure.querySelector('.delete').addEventListener('click', async () => {
+        try { await deleteImage(image.name); }
+        catch (error) { status.className = 'error'; status.textContent = error.message; }
+      });
+      prepend ? gallery.prepend(figure) : gallery.append(figure);
+    }
+
+    lightbox.addEventListener('click', (event) => {
+      if (event.target !== lightboxDelete) closeLightbox();
+    });
+    lightboxImage.addEventListener('click', (event) => event.stopPropagation());
+    lightboxDelete.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      try { await deleteImage(expandedName); }
+      catch (error) { status.className = 'error'; status.textContent = error.message; }
+    });
+    document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeLightbox(); });
+    document.getElementById('removeAttachment').addEventListener('click', () => setInput(null));
+    ['model', 'size'].forEach((id) => document.getElementById(id).addEventListener('change', renderEstimate));
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      submit.disabled = true;
+      status.className = '';
+      status.textContent = 'Generating… this can take a few minutes.';
+      const prompt = document.getElementById('prompt');
+      const promptText = prompt.value;
+      prompt.value = '';
+      try {
+        const response = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: promptText,
+            model: document.getElementById('model').value,
+            size: document.getElementById('size').value,
+            count: 1,
+            input_image: selectedInput?.name || ''
+          })
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        status.textContent = `Created ${data.images.length} image(s) with ${data.model}. Saved to outputs/.`;
+        renderCost(data.cost);
+        data.images.forEach((image) => addImage(image));
+      } catch (error) {
+        prompt.value = promptText;
+        status.className = 'error';
+        status.textContent = error.message.length > 280 ? error.message.slice(0, 277) + '…' : error.message;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    fetch('/api/images')
+      .then((response) => response.json())
+      .then((data) => (data.images || []).forEach((image) => addImage(image, false)))
+      .catch(() => {});
+    fetch('/api/cost').then((response) => response.json()).then(renderCost).catch(() => {});
+    renderEstimate();
+  </script>
+</body>
+</html>

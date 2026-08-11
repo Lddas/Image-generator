@@ -1,12 +1,13 @@
-# Seedream Image Generator
+# Seedream + Seedance Generator
 
-A tiny, dependency-free local app that sends prompts to BytePlus ModelArk/Seedream and saves every returned image under `outputs/`.
+A small local app for BytePlus ModelArk image generation, Seedance video generation, and reusable sprite-sheet exports.
 
 Generated images persist across page reloads and server restarts. Deleting an
 image in the UI moves it to `outputs/.trash/` rather than permanently erasing
 it. Deleting an attached image automatically removes it from the prompt.
-Uploaded reference images are saved automatically under `inputs/`; that folder
-is also created at runtime and ignored by Git.
+Uploaded references are saved under `inputs/`, generated videos under `videos/`,
+and sprite sheets plus JSON metadata under `sprites/`. These folders are created
+automatically and ignored by Git.
 
 ## Start
 
@@ -29,7 +30,9 @@ seedream-image-generator/
 ├── index.html           # browser UI
 ├── server.py            # local server and Seedream API client
 ├── inputs/              # created automatically for uploaded input images
-└── outputs/             # created automatically at runtime; ignored by Git
+├── outputs/             # generated images
+├── videos/              # generated Seedance MP4 files
+└── sprites/             # sprite-sheet PNG and JSON metadata
 ```
 
 ## Configuration
@@ -56,6 +59,9 @@ Optional variables:
 - `ARK_BASE_URL`
 - `SEEDREAM_MODEL`
 - `PORT`
+
+Sprite-sheet export requires `ffmpeg` and `ffprobe` on your PATH. Image and
+video generation use only Python's standard library.
 
 ## Share as a repository
 

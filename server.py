@@ -6,9 +6,12 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import math
 import os
 import re
 import ssl
+import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,9 +24,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 OUTPUTS = ROOT / "outputs"
 INPUTS = ROOT / "inputs"
+VIDEOS = ROOT / "videos"
+SPRITES = ROOT / "sprites"
 LEDGER = ROOT / ".cost-ledger.json"
 DEFAULT_BASE = "https://ark.ap-southeast.bytepluses.com/api/v3"
 DEFAULT_MODEL = "dola-seedream-5-0-pro-260628"
+DEFAULT_VIDEO_MODEL = "seedance-1-5-pro-251215"
 MODEL_PRICES = {
     "seedream-5-0-lite-260128": {"output": 0.035},
     "dola-seedream-5-0-pro-260628": {"small": 0.045, "large": 0.09},
@@ -88,9 +94,27 @@ def post_json(url: str, body: dict, timeout: int = 360) -> dict:
             message = parsed.get("error", {}).get("message") or detail
         except (json.JSONDecodeError, AttributeError):
             pass
-        raise RuntimeError(f"Seedream HTTP {exc.code}: {redact(message)[:500]}") from None
+        raise RuntimeError(f"ModelArk HTTP {exc.code}: {redact(message)[:500]}") from None
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"Seedream network error: {exc.reason}") from None
+        raise RuntimeError(f"ModelArk network error: {exc.reason}") from None
+
+
+def get_json(url: str, timeout: int = 60) -> dict:
+    key = api_key()
+    if not key:
+        raise RuntimeError("Missing ARK_API_KEY or SEEDANCE_API_KEY in env")
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout, context=ssl.create_default_context()) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        raise RuntimeError(f"Seedance HTTP {exc.code}: {redact(detail)[:500]}") from None
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Seedance network error: {exc.reason}") from None
 
 
 def download_image(item: dict, index: int) -> dict:
@@ -119,6 +143,132 @@ def image_data_uri(name: str) -> str:
     mime = mimetypes.guess_type(safe_name)[0] or "image/png"
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime};base64,{encoded}"
+
+
+def find_video_url(value) -> str:
+    if isinstance(value, dict):
+        for key in ("video_url", "url"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.startswith("http") and (key == "video_url" or ".mp4" in candidate.lower()):
+                return candidate
+        for nested in value.values():
+            found = find_video_url(nested)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for nested in value:
+            found = find_video_url(nested)
+            if found:
+                return found
+    return ""
+
+
+def download_video(url: str) -> dict:
+    VIDEOS.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    name = f"seedance_{stamp}_{uuid.uuid4().hex[:6]}.mp4"
+    path = VIDEOS / name
+    request = urllib.request.Request(url, headers={"User-Agent": "SeedanceLocal/1.0"})
+    with urllib.request.urlopen(request, timeout=600) as response:
+        path.write_bytes(response.read())
+    return {"name": name, "url": f"/videos/{name}"}
+
+
+def generate_video(request_data: dict) -> tuple[dict, str]:
+    prompt = str(request_data.get("prompt") or "").strip()
+    if not prompt:
+        raise RuntimeError("Prompt is required")
+    model = str(request_data.get("model") or DEFAULT_VIDEO_MODEL)
+    names = [str(name) for name in request_data.get("input_images") or [] if str(name).strip()]
+    max_images = 2 if model.startswith("seedance-1-") else 10
+    names = names[:max_images]
+    content = [{"type": "text", "text": prompt[:2000]}]
+    for index, name in enumerate(names):
+        item = {"type": "image_url", "image_url": {"url": image_data_uri(name)}}
+        if model.startswith("seedance-1-"):
+            item["role"] = "first_frame" if index == 0 else "last_frame"
+        else:
+            item["role"] = "reference_image"
+        content.append(item)
+    body = {
+        "model": model,
+        "content": content,
+        "duration": max(2, min(12, int(request_data.get("duration") or 5))),
+        "ratio": str(request_data.get("ratio") or "16:9"),
+        "resolution": str(request_data.get("resolution") or "720p"),
+        "watermark": False,
+    }
+    base = os.environ.get("ARK_BASE_URL", DEFAULT_BASE).rstrip("/")
+    tasks_url = f"{base}/contents/generations/tasks"
+    created = post_json(tasks_url, body, timeout=90)
+    task_id = str(created.get("id") or (created.get("data") or {}).get("id") or "")
+    direct_url = find_video_url(created)
+    if direct_url:
+        return download_video(direct_url), task_id
+    if not task_id:
+        raise RuntimeError("Seedance accepted no task and returned no video")
+    deadline = time.monotonic() + 900
+    while time.monotonic() < deadline:
+        task = get_json(f"{tasks_url}/{urllib.parse.quote(task_id)}")
+        status = str(task.get("status") or (task.get("data") or {}).get("status") or "").lower()
+        video_url = find_video_url(task)
+        if video_url:
+            return download_video(video_url), task_id
+        if status in {"failed", "cancelled", "canceled", "expired"}:
+            error = task.get("error") or (task.get("data") or {}).get("error") or status
+            raise RuntimeError(f"Seedance task {status}: {error}")
+        time.sleep(5)
+    raise RuntimeError(f"Seedance task {task_id} did not finish within 15 minutes")
+
+
+def generate_sprite(request_data: dict) -> dict:
+    name = Path(str(request_data.get("video") or "")).name
+    video_path = VIDEOS / name
+    if not name or not video_path.is_file():
+        raise RuntimeError("Select a generated video first")
+    fps = max(1, min(24, int(request_data.get("fps") or 12)))
+    cell = max(32, min(512, int(request_data.get("cell_size") or 128)))
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(video_path)],
+            check=True, capture_output=True, text=True,
+        )
+        duration = float(probe.stdout.strip())
+    except FileNotFoundError:
+        raise RuntimeError("ffmpeg/ffprobe is required. Install ffmpeg, then restart the app") from None
+    except (subprocess.CalledProcessError, ValueError) as exc:
+        raise RuntimeError(f"Could not inspect video: {exc}") from None
+    frames = max(1, min(100, math.ceil(duration * fps)))
+    columns = math.ceil(math.sqrt(frames))
+    rows = math.ceil(frames / columns)
+    SPRITES.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "-", video_path.stem)[:60]
+    output_name = f"{stem}_{fps}fps_{cell}px_{uuid.uuid4().hex[:6]}.png"
+    output_path = SPRITES / output_name
+    filters = [f"fps={fps}"]
+    if bool(request_data.get("remove_green")):
+        filters.append("chromakey=0x00FF00:0.18:0.08")
+    filters.extend([
+        f"scale={cell}:{cell}:force_original_aspect_ratio=decrease",
+        f"pad={cell}:{cell}:(ow-iw)/2:(oh-ih)/2:color=0x00000000",
+        f"tile={columns}x{rows}:nb_frames={frames}:padding=0:margin=0",
+    ])
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(video_path), "-vf", ",".join(filters), "-frames:v", "1", str(output_path)],
+            check=True, capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("ffmpeg is required. Install ffmpeg, then restart the app") from None
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Sprite export failed: {exc.stderr[-400:]}") from None
+    metadata = {
+        "image": output_name, "source_video": name, "fps": fps,
+        "frame_count": frames, "frame_width": cell, "frame_height": cell,
+        "columns": columns, "rows": rows,
+    }
+    (SPRITES / f"{output_path.stem}.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    return {"name": output_name, "url": f"/sprites/{output_name}", "metadata": metadata}
 
 
 def output_price(model: str, item: dict) -> float:
@@ -189,6 +339,24 @@ class Handler(SimpleHTTPRequestHandler):
             )
             self._json(200, {"ok": True, "images": [{"name": path.name, "url": f"/outputs/{path.name}"} for path in files]})
             return
+        if self.path == "/api/videos":
+            VIDEOS.mkdir(exist_ok=True)
+            files = sorted(
+                (path for path in VIDEOS.iterdir() if path.is_file()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            self._json(200, {"ok": True, "videos": [{"name": path.name, "url": f"/videos/{path.name}"} for path in files]})
+            return
+        if self.path == "/api/sprites":
+            SPRITES.mkdir(exist_ok=True)
+            files = sorted(
+                (path for path in SPRITES.glob("*.png") if path.is_file()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            self._json(200, {"ok": True, "sprites": [{"name": path.name, "url": f"/sprites/{path.name}"} for path in files]})
+            return
         if self.path == "/api/cost":
             self._json(200, {"ok": True, **cost_summary()})
             return
@@ -197,21 +365,32 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_DELETE(self) -> None:
-        prefix = "/api/images/"
-        if not self.path.startswith(prefix):
+        image_prefix = "/api/images/"
+        video_prefix = "/api/videos/"
+        if self.path.startswith(image_prefix):
+            prefix, folder = image_prefix, OUTPUTS
+        elif self.path.startswith(video_prefix):
+            prefix, folder = video_prefix, VIDEOS
+        elif self.path.startswith("/api/sprites/"):
+            prefix, folder = "/api/sprites/", SPRITES
+        else:
             self._json(404, {"ok": False, "error": "Not found"})
             return
         name = Path(self.path[len(prefix):]).name
-        path = OUTPUTS / name
+        path = folder / name
         if not name or name == ".gitkeep" or not path.is_file():
             self._json(404, {"ok": False, "error": "Image not found"})
             return
         # Keep deletes recoverable instead of unlinking paid outputs permanently.
-        trash = OUTPUTS / ".trash"
+        trash = folder / ".trash"
         trash.mkdir(exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         trashed = trash / f"{stamp}_{name}"
         path.replace(trashed)
+        if folder == SPRITES:
+            metadata = SPRITES / f"{Path(name).stem}.json"
+            if metadata.is_file():
+                metadata.replace(trash / f"{stamp}_{metadata.name}")
         self._json(200, {"ok": True, "deleted": name, "recoverable_at": str(trashed)})
 
     def do_POST(self) -> None:
@@ -248,6 +427,28 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": f"Invalid upload: {exc}"})
             except Exception as exc:
                 self._json(500, {"ok": False, "error": redact(str(exc))})
+            return
+        if parsed_path.path == "/api/video/generate":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                request_data = json.loads(self.rfile.read(length) or b"{}")
+                video, task_id = generate_video(request_data)
+                self._json(200, {
+                    "ok": True,
+                    "video": video,
+                    "model": str(request_data.get("model") or DEFAULT_VIDEO_MODEL),
+                    "task_id": task_id,
+                })
+            except Exception as exc:
+                self._json(502, {"ok": False, "error": redact(str(exc))})
+            return
+        if parsed_path.path == "/api/sprite/generate":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                request_data = json.loads(self.rfile.read(length) or b"{}")
+                self._json(200, {"ok": True, "sprite": generate_sprite(request_data)})
+            except Exception as exc:
+                self._json(502, {"ok": False, "error": redact(str(exc))})
             return
         if self.path != "/api/generate":
             self._json(404, {"ok": False, "error": "Not found"})
@@ -309,7 +510,9 @@ class Handler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     OUTPUTS.mkdir(exist_ok=True)
     INPUTS.mkdir(exist_ok=True)
-    print(f"Seedream image generator: http://127.0.0.1:{PORT}")
+    VIDEOS.mkdir(exist_ok=True)
+    SPRITES.mkdir(exist_ok=True)
+    print(f"Seedream + Seedance generator: http://127.0.0.1:{PORT}")
     print(f"Outputs: {OUTPUTS}")
     print(f"API key: {'configured' if api_key() else 'MISSING'}")
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

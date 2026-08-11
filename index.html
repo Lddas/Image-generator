@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Seedream Image Generator</title>
+  <title>Seedream + Seedance Generator</title>
   <style>
     :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
     * { box-sizing: border-box; }
@@ -43,25 +43,57 @@
     .attachment button { width:26px; height:26px; padding:0; margin-left:4px; border-radius:50%; background:#2a2f3a; font-size:17px; }
     .input-tools { display:flex; align-items:center; gap:10px; }
     .uploadbtn { display:inline-flex; align-items:center; width:auto; padding:9px 13px; background:#262b36; color:#d4d8e1; font-size:13px; font-weight:600; }
+    .mode-tabs { display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; padding:5px; border-radius:12px; background:#0f1218; }
+    .mode-tabs button { padding:10px; background:transparent; color:#9ca3af; }
+    .mode-tabs button.active { background:#2a2f3a; color:#fff; }
+    .attachments { display:flex; flex-wrap:wrap; gap:8px; }
+    .video-fields[hidden], .image-fields[hidden], .sprite-fields[hidden] { display:none; }
+    figure video { width:100%; display:block; aspect-ratio:16/9; object-fit:cover; background:#050609; }
+    .video-gallery { grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); }
+    .section-title { margin:30px 0 -8px; color:#bbc1ce; font-size:14px; }
     @media (max-width: 720px) { .row { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
   <main>
-    <h1>Seedream</h1>
-    <p class="sub">Generate or modify images locally. Every result is saved to <code>outputs/</code>.</p>
+    <h1>Seedream + Seedance</h1>
+    <p class="sub">Generate or modify images and videos locally. Results are saved to <code>outputs/</code> and <code>videos/</code>.</p>
     <form id="form">
-      <div class="input-tools"><button class="uploadbtn" id="uploadButton" type="button">Upload input image</button><input id="uploadInput" type="file" accept="image/*" hidden /></div>
-      <div class="attachment" id="attachment" hidden><img id="attachmentImage" alt="Selected input" /><span id="attachmentName"></span><button id="removeAttachment" type="button" aria-label="Remove input image">×</button></div>
-      <label>Prompt<textarea id="prompt" required autofocus placeholder="Describe the image you want…"></textarea></label>
-      <div class="row">
+      <div class="mode-tabs"><button id="imageMode" class="active" type="button">Image</button><button id="videoMode" type="button">Video</button><button id="spriteMode" type="button">Sprite sheet</button></div>
+      <div class="input-tools"><button class="uploadbtn" id="uploadButton" type="button">Upload reference image(s)</button><input id="uploadInput" type="file" accept="image/*" multiple hidden /></div>
+      <div class="attachments" id="attachments"></div>
+      <label>Prompt<textarea id="prompt" required autofocus placeholder="Describe what you want…"></textarea></label>
+      <div class="row image-fields" id="imageFields">
         <label>Model<select id="model"><option value="dola-seedream-5-0-pro-260628">Seedream 5.0 Pro</option><option value="seedream-5-0-lite-260128">Seedream 5.0 Lite</option></select></label>
         <label>Size<select id="size"><option selected>2K</option><option>3K</option><option>4K</option></select></label>
+      </div>
+      <div class="video-fields" id="videoFields" hidden>
+        <div class="row">
+          <label>Model<select id="videoModel"><option value="dreamina-seedance-2-5-260628">Seedance 2.5 — latest multimodal</option><option value="dreamina-seedance-2-0-fast-260128">Seedance 2.0 Fast — multimodal</option><option value="dreamina-seedance-2-0-260128">Seedance 2.0 — quality</option><option value="seedance-1-5-pro-251215">Seedance 1.5 Pro</option><option value="seedance-1-0-pro-fast-251015">Seedance 1.0 Pro Fast</option><option value="seedance-1-0-pro-250528">Seedance 1.0 Pro</option></select></label>
+          <label>Resolution<select id="videoResolution"><option>720p</option><option>1080p</option></select></label>
+        </div>
+        <div class="row">
+          <label>Aspect ratio<select id="videoRatio"><option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option><option>3:4</option><option>21:9</option></select></label>
+          <label>Duration<select id="videoDuration"><option value="5">5 seconds</option><option value="8">8 seconds</option><option value="10">10 seconds</option><option value="12">12 seconds</option></select></label>
+        </div>
+      </div>
+      <div class="sprite-fields" id="spriteFields" hidden>
+        <p class="sub" id="spriteSource">Select a generated video below, then export its frames.</p>
+        <div class="row">
+          <label>Frames per second<select id="spriteFps"><option>6</option><option selected>12</option><option>15</option><option>24</option></select></label>
+          <label>Frame size<select id="spriteSize"><option>64</option><option selected>128</option><option>256</option><option>512</option></select></label>
+        </div>
+        <label><span><input id="removeGreen" type="checkbox" style="width:auto;margin-right:8px" />Remove green-screen background</span></label>
       </div>
       <div class="generate-action"><button id="submit" type="submit">Generate</button><span class="cost" id="cost"><span id="nextCost">$0.090 this run</span><span>·</span><b>$0.070 total</b></span></div>
       <div id="status" role="status" aria-live="polite"></div>
     </form>
+    <h2 class="section-title">Images</h2>
     <section class="gallery" id="gallery" aria-label="Generated images"></section>
+    <h2 class="section-title">Videos</h2>
+    <section class="gallery video-gallery" id="videoGallery" aria-label="Generated videos"></section>
+    <h2 class="section-title">Sprite sheets</h2>
+    <section class="gallery" id="spriteGallery" aria-label="Generated sprite sheets"></section>
     <div class="lightbox" id="lightbox" hidden role="dialog" aria-label="Image preview">
       <button class="delete" id="lightboxDelete" type="button" aria-label="Delete image">×</button>
       <img id="lightboxImage" alt="Expanded generated image" />
@@ -72,11 +104,15 @@
     const status = document.getElementById('status');
     const submit = document.getElementById('submit');
     const gallery = document.getElementById('gallery');
+    const videoGallery = document.getElementById('videoGallery');
+    const spriteGallery = document.getElementById('spriteGallery');
     const lightbox = document.getElementById('lightbox');
     const lightboxImage = document.getElementById('lightboxImage');
     const lightboxDelete = document.getElementById('lightboxDelete');
+    let mode = 'image';
     let expandedName = '';
-    let selectedInput = null;
+    let selectedInputs = [];
+    let selectedVideo = null;
     let clickTimer = null;
 
     function renderCost(cost) {
@@ -86,65 +122,95 @@
     }
 
     function renderEstimate() {
+      if (mode === 'video') {
+        document.getElementById('nextCost').textContent = 'Video billed by provider';
+        return;
+      }
+      if (mode === 'sprite') {
+        document.getElementById('nextCost').textContent = 'Local export · no API cost';
+        return;
+      }
       const model = document.getElementById('model').value;
-      const size = document.getElementById('size').value;
-      const unit = model.includes('lite') ? 0.035 : (size === '2K' ? 0.09 : 0.09);
+      const unit = model.includes('lite') ? 0.035 : 0.09;
       document.getElementById('nextCost').textContent = '$' + unit.toFixed(3) + ' this run';
     }
 
-    function setInput(image) {
-      selectedInput = image;
-      document.querySelectorAll('.gallery figure').forEach((figure) => figure.classList.toggle('is-selected', figure.dataset.name === image?.name));
-      const attachment = document.getElementById('attachment');
-      attachment.hidden = !image;
-      if (image) {
-        document.getElementById('attachmentImage').src = image.url;
-        document.getElementById('attachmentName').textContent = image.display_name || image.name;
-      }
+    function renderInputs() {
+      document.querySelectorAll('#gallery figure').forEach((figure) => figure.classList.toggle('is-selected', selectedInputs.some((image) => image.name === figure.dataset.name)));
+      const host = document.getElementById('attachments');
+      host.replaceChildren();
+      selectedInputs.forEach((image) => {
+        const attachment = document.createElement('div');
+        attachment.className = 'attachment';
+        attachment.innerHTML = `<img src="${image.url}" alt="Selected input" /><span>${image.display_name || image.name}</span><button type="button" aria-label="Remove input image">×</button>`;
+        attachment.querySelector('button').addEventListener('click', () => {
+          selectedInputs = selectedInputs.filter((item) => item.name !== image.name);
+          renderInputs();
+        });
+        host.append(attachment);
+      });
     }
 
+    function toggleInput(image) {
+      const exists = selectedInputs.some((item) => item.name === image.name);
+      selectedInputs = exists ? selectedInputs.filter((item) => item.name !== image.name) : [...selectedInputs, image];
+      renderInputs();
+    }
+
+    function setMode(nextMode) {
+      mode = nextMode;
+      document.getElementById('imageMode').classList.toggle('active', mode === 'image');
+      document.getElementById('videoMode').classList.toggle('active', mode === 'video');
+      document.getElementById('spriteMode').classList.toggle('active', mode === 'sprite');
+      document.getElementById('imageFields').hidden = mode !== 'image';
+      document.getElementById('videoFields').hidden = mode !== 'video';
+      document.getElementById('spriteFields').hidden = mode !== 'sprite';
+      document.getElementById('prompt').closest('label').hidden = mode === 'sprite';
+      document.getElementById('prompt').required = mode !== 'sprite';
+      document.getElementById('uploadButton').hidden = mode === 'sprite';
+      document.getElementById('attachments').hidden = mode === 'sprite';
+      submit.textContent = mode === 'image' ? 'Generate image' : mode === 'video' ? 'Generate video' : 'Export sprite sheet';
+      document.getElementById('prompt').placeholder = mode === 'image' ? 'Describe the image you want…' : 'Describe the scene, motion and camera movement…';
+      renderEstimate();
+    }
+
+    document.getElementById('imageMode').addEventListener('click', () => setMode('image'));
+    document.getElementById('videoMode').addEventListener('click', () => setMode('video'));
+    document.getElementById('spriteMode').addEventListener('click', () => setMode('sprite'));
     document.getElementById('uploadButton').addEventListener('click', () => document.getElementById('uploadInput').click());
     document.getElementById('uploadInput').addEventListener('change', async (event) => {
-      const file = event.target.files?.[0];
+      const files = [...(event.target.files || [])];
       event.target.value = '';
-      if (!file) return;
+      if (!files.length) return;
       status.className = '';
-      status.textContent = 'Uploading input image…';
+      status.textContent = `Uploading ${files.length} reference image(s)…`;
       try {
-        const response = await fetch('/api/upload?name=' + encodeURIComponent(file.name), {
-          method: 'POST',
-          headers: { 'Content-Type': file.type || 'application/octet-stream' },
-          body: file
-        });
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(data.error || 'Upload failed');
-        setInput(data.image);
-        status.textContent = 'Input image attached.';
+        for (const file of files) {
+          const response = await fetch('/api/upload?name=' + encodeURIComponent(file.name), {
+            method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file
+          });
+          const data = await response.json();
+          if (!response.ok || !data.ok) throw new Error(data.error || 'Upload failed');
+          selectedInputs.push(data.image);
+        }
+        renderInputs();
+        status.textContent = `${files.length} reference image(s) attached.`;
       } catch (error) {
-        status.className = 'error';
-        status.textContent = error.message;
+        status.className = 'error'; status.textContent = error.message;
       }
     });
 
-    function closeLightbox() {
-      lightbox.hidden = true;
-      lightboxImage.removeAttribute('src');
-      expandedName = '';
-    }
+    function closeLightbox() { lightbox.hidden = true; lightboxImage.removeAttribute('src'); expandedName = ''; }
+    function openLightbox(image) { expandedName = image.name; lightboxImage.src = image.url; lightbox.hidden = false; }
 
-    function openLightbox(image) {
-      expandedName = image.name;
-      lightboxImage.src = image.url;
-      lightbox.hidden = false;
-    }
-
-    async function deleteImage(name) {
-      if (!window.confirm(`Delete ${name}? The file will be moved to outputs/.trash/ so it can be recovered.`)) return;
-      const response = await fetch('/api/images/' + encodeURIComponent(name), { method: 'DELETE' });
+    async function deleteAsset(kind, name) {
+      if (!window.confirm(`Delete ${name}? It will be moved to a local .trash folder.`)) return;
+      const response = await fetch(`/api/${kind}/` + encodeURIComponent(name), { method: 'DELETE' });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || 'Delete failed');
-      gallery.querySelector(`[data-name="${CSS.escape(name)}"]`)?.remove();
-      if (selectedInput?.name === name) setInput(null);
+      document.querySelector(`[data-name="${CSS.escape(name)}"]`)?.remove();
+      selectedInputs = selectedInputs.filter((item) => item.name !== name);
+      renderInputs();
       if (expandedName === name) closeLightbox();
     }
 
@@ -153,73 +219,100 @@
       const figure = document.createElement('figure');
       figure.dataset.name = image.name;
       figure.innerHTML = `<button class="delete" type="button" aria-label="Delete ${image.name}">×</button><img src="${image.url}" alt="Generated image" /><figcaption>${image.name}</figcaption>`;
-      figure.querySelector('img').addEventListener('click', () => {
-        clearTimeout(clickTimer);
-        clickTimer = setTimeout(() => setInput(selectedInput?.name === image.name ? null : image), 220);
-      });
-      figure.querySelector('img').addEventListener('dblclick', () => {
-        clearTimeout(clickTimer);
-        openLightbox(image);
-      });
-      figure.querySelector('.delete').addEventListener('click', async () => {
-        try { await deleteImage(image.name); }
-        catch (error) { status.className = 'error'; status.textContent = error.message; }
-      });
+      figure.querySelector('img').addEventListener('click', () => { clearTimeout(clickTimer); clickTimer = setTimeout(() => toggleInput(image), 220); });
+      figure.querySelector('img').addEventListener('dblclick', () => { clearTimeout(clickTimer); openLightbox(image); });
+      figure.querySelector('.delete').addEventListener('click', () => deleteAsset('images', image.name).catch(showError));
       prepend ? gallery.prepend(figure) : gallery.append(figure);
     }
 
-    lightbox.addEventListener('click', (event) => {
-      if (event.target !== lightboxDelete) closeLightbox();
-    });
+    function addVideo(video, prepend = true) {
+      if (videoGallery.querySelector(`[data-name="${CSS.escape(video.name)}"]`)) return;
+      const figure = document.createElement('figure');
+      figure.dataset.name = video.name;
+      figure.innerHTML = `<button class="delete" type="button" aria-label="Delete ${video.name}">×</button><video src="${video.url}" controls preload="metadata"></video><figcaption>${video.name}</figcaption>`;
+      figure.querySelector('video').addEventListener('click', () => {
+        selectedVideo = selectedVideo?.name === video.name ? null : video;
+        document.querySelectorAll('#videoGallery figure').forEach((item) => item.classList.toggle('is-selected', item.dataset.name === selectedVideo?.name));
+        document.getElementById('spriteSource').textContent = selectedVideo ? `Source: ${selectedVideo.name}` : 'Select a generated video below, then export its frames.';
+      });
+      figure.querySelector('.delete').addEventListener('click', () => deleteAsset('videos', video.name).catch(showError));
+      prepend ? videoGallery.prepend(figure) : videoGallery.append(figure);
+    }
+
+    function addSprite(sprite, prepend = true) {
+      if (spriteGallery.querySelector(`[data-name="${CSS.escape(sprite.name)}"]`)) return;
+      const figure = document.createElement('figure');
+      figure.dataset.name = sprite.name;
+      figure.innerHTML = `<button class="delete" type="button" aria-label="Delete ${sprite.name}">×</button><img src="${sprite.url}" alt="Sprite sheet" /><figcaption>${sprite.name}</figcaption>`;
+      figure.querySelector('.delete').addEventListener('click', () => deleteAsset('sprites', sprite.name).catch(showError));
+      prepend ? spriteGallery.prepend(figure) : spriteGallery.append(figure);
+    }
+
+    function showError(error) { status.className = 'error'; status.textContent = error.message; }
+    lightbox.addEventListener('click', (event) => { if (event.target !== lightboxDelete) closeLightbox(); });
     lightboxImage.addEventListener('click', (event) => event.stopPropagation());
-    lightboxDelete.addEventListener('click', async (event) => {
-      event.stopPropagation();
-      try { await deleteImage(expandedName); }
-      catch (error) { status.className = 'error'; status.textContent = error.message; }
-    });
+    lightboxDelete.addEventListener('click', (event) => { event.stopPropagation(); deleteAsset('images', expandedName).catch(showError); });
     document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeLightbox(); });
-    document.getElementById('removeAttachment').addEventListener('click', () => setInput(null));
     ['model', 'size'].forEach((id) => document.getElementById(id).addEventListener('change', renderEstimate));
+
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       submit.disabled = true;
       status.className = '';
-      status.textContent = 'Generating… this can take a few minutes.';
+      status.textContent = mode === 'image' ? 'Generating image…' : mode === 'video' ? 'Creating Seedance task… Video generation may take several minutes.' : 'Exporting sprite sheet locally…';
       const prompt = document.getElementById('prompt');
       const promptText = prompt.value;
       prompt.value = '';
       try {
-        const response = await fetch('/api/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: promptText,
-            model: document.getElementById('model').value,
-            size: document.getElementById('size').value,
-            count: 1,
-            input_image: selectedInput?.name || ''
-          })
+        const isVideo = mode === 'video';
+        const isSprite = mode === 'sprite';
+        if (isSprite && !selectedVideo) throw new Error('Select a generated video below first');
+        const payload = isVideo ? {
+          prompt: promptText,
+          model: document.getElementById('videoModel').value,
+          resolution: document.getElementById('videoResolution').value,
+          ratio: document.getElementById('videoRatio').value,
+          duration: Number(document.getElementById('videoDuration').value),
+          input_images: selectedInputs.map((image) => image.name)
+        } : isSprite ? {
+          video: selectedVideo.name,
+          fps: Number(document.getElementById('spriteFps').value),
+          cell_size: Number(document.getElementById('spriteSize').value),
+          remove_green: document.getElementById('removeGreen').checked
+        } : {
+          prompt: promptText,
+          model: document.getElementById('model').value,
+          size: document.getElementById('size').value,
+          count: 1,
+          input_image: selectedInputs[0]?.name || ''
+        };
+        const response = await fetch(isVideo ? '/api/video/generate' : isSprite ? '/api/sprite/generate' : '/api/generate', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
         });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
-        status.textContent = `Created ${data.images.length} image(s) with ${data.model}. Saved to outputs/.`;
-        renderCost(data.cost);
-        data.images.forEach((image) => addImage(image));
+        if (isVideo) {
+          addVideo(data.video);
+          status.textContent = `Created video with ${data.model}. Saved to videos/.`;
+        } else if (isSprite) {
+          addSprite(data.sprite);
+          status.textContent = `Exported ${data.sprite.metadata.frame_count} frames. PNG and JSON saved to sprites/.`;
+        } else {
+          data.images.forEach((image) => addImage(image));
+          renderCost(data.cost);
+          status.textContent = `Created image with ${data.model}. Saved to outputs/.`;
+        }
       } catch (error) {
         prompt.value = promptText;
-        status.className = 'error';
-        status.textContent = error.message.length > 280 ? error.message.slice(0, 277) + '…' : error.message;
-      } finally {
-        submit.disabled = false;
-      }
+        showError(error);
+      } finally { submit.disabled = false; }
     });
 
-    fetch('/api/images')
-      .then((response) => response.json())
-      .then((data) => (data.images || []).forEach((image) => addImage(image, false)))
-      .catch(() => {});
+    fetch('/api/images').then((response) => response.json()).then((data) => (data.images || []).forEach((image) => addImage(image, false))).catch(() => {});
+    fetch('/api/videos').then((response) => response.json()).then((data) => (data.videos || []).forEach((video) => addVideo(video, false))).catch(() => {});
+    fetch('/api/sprites').then((response) => response.json()).then((data) => (data.sprites || []).forEach((sprite) => addSprite(sprite, false))).catch(() => {});
     fetch('/api/cost').then((response) => response.json()).then(renderCost).catch(() => {});
-    renderEstimate();
+    setMode('image');
   </script>
 </body>
 </html>

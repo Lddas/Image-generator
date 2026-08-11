@@ -3,6 +3,8 @@ env
 .cost-ledger.json
 outputs/*
 inputs/*
+videos/*
+sprites/*
 __pycache__/
 *.pyc
 .DS_Store

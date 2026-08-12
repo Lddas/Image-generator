@@ -54,6 +54,8 @@
     .sam-editor[hidden] { display:none; }
     .sam-stage { position:relative; width:min(720px,100%); min-height:180px; display:grid; place-items:center; overflow:hidden; border:1px solid #343a49; border-radius:12px; background:#090b10; cursor:crosshair; }
     .sam-stage img { display:block; max-width:100%; max-height:520px; object-fit:contain; }
+    .sam-stage .sam-source { position:relative; z-index:1; }
+    .sam-stage .sam-mask { position:absolute; z-index:2; max-width:100%; max-height:520px; opacity:.58; mix-blend-mode:screen; filter:sepia(1) saturate(8) hue-rotate(135deg); pointer-events:none; }
     .sam-help { margin:0; color:#9ca3af; font-size:12px; }
     @media (max-width: 720px) { .row { grid-template-columns:1fr; } }
   </style>
@@ -211,11 +213,9 @@
         });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || 'SAM selection failed');
-        selectedInputs = [data.segment];
-        renderInputs();
-        document.getElementById('samStage').innerHTML = `<img src="${data.segment.url}" alt="SAM selected element" />`;
-        document.getElementById('samEditor').hidden = true;
-        status.textContent = `Element selected with local SAM · ${data.segment.tampon}px tampon. Enter the change prompt, then Generate image.`;
+        window.samSelection = data.segment;
+        document.getElementById('samStage').innerHTML = `<img class="sam-source" src="${data.segment.source_url}" alt="Source image" /><img class="sam-mask" src="${data.segment.mask_url}" alt="SAM mask overlay" />`;
+        status.textContent = `Element selected with fal.ai SAM2 · ${data.segment.tampon}px tampon. The colored overlay is the edit mask.`;
         document.getElementById('prompt').focus();
       } catch (error) { showError(error); }
     });
@@ -326,7 +326,9 @@
           model: document.getElementById('model').value,
           size: document.getElementById('size').value,
           count: 1,
-          input_image: selectedInputs[0]?.name || ''
+          input_image: selectedInputs[0]?.name || '',
+          sam_cutout: window.samSelection?.name || '',
+          sam_mask: window.samSelection?.mask_url ? window.samSelection.mask_url.replace(/^\//, '') : ''
         };
         const response = await fetch(isVideo ? '/api/video/generate' : isSprite ? '/api/sprite/generate' : '/api/generate', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)

@@ -173,6 +173,8 @@ def run_sam_segment(request_data: dict) -> dict:
     SEGMENTS.mkdir(parents=True, exist_ok=True)
     output_name = f"sam_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:6]}.png"
     destination = SEGMENTS / output_name
+    mask_name = f"{Path(output_name).stem}_mask.png"
+    saved_mask = SEGMENTS / mask_name
     dimensions = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", str(source)],
         check=True, capture_output=True, text=True,
@@ -202,6 +204,7 @@ def run_sam_segment(request_data: dict) -> dict:
         mask_path = Path(tmp) / "mask.png"
         with urllib.request.urlopen(urllib.request.Request(mask_url, headers={"User-Agent": "SeedreamLocal/1.0"}), timeout=120) as response:
             mask_path.write_bytes(response.read())
+        saved_mask.write_bytes(mask_path.read_bytes())
         alpha_filter = f"format=gray,scale={width}:{height}"
         if tampon:
             alpha_filter += "," + ",".join(["dilation"] * tampon)
@@ -209,7 +212,12 @@ def run_sam_segment(request_data: dict) -> dict:
             ["ffmpeg", "-y", "-i", str(source), "-i", str(mask_path), "-filter_complex", f"[1:v]{alpha_filter}[a];[0:v][a]alphamerge", "-frames:v", "1", str(destination)],
             check=True, capture_output=True,
         )
-    return {"name": f"segments/{output_name}", "display_name": output_name, "url": f"/segments/{output_name}", "tampon": tampon, "provider": "fal.ai SAM2", "width": width, "height": height}
+    return {
+        "name": f"segments/{output_name}", "display_name": output_name,
+        "url": f"/segments/{output_name}", "mask_url": f"/segments/{mask_name}",
+        "source_name": name, "source_url": f"/{'inputs' if Path(name).parts[:1] == ('inputs',) else 'outputs'}/{Path(name).name}",
+        "tampon": tampon, "provider": "fal.ai SAM2", "width": width, "height": height,
+    }
 
 
 def find_video_url(value) -> str:
@@ -565,6 +573,15 @@ class Handler(SimpleHTTPRequestHandler):
             input_image = str(request_data.get("input_image") or "").strip()
             if input_image:
                 body["image"] = image_data_uri(input_image)
+            sam_cutout = str(request_data.get("sam_cutout") or "").strip()
+            sam_mask = str(request_data.get("sam_mask") or "").strip()
+            if sam_cutout and sam_mask and input_image:
+                body["image"] = [image_data_uri(input_image), image_data_uri(sam_mask), image_data_uri(sam_cutout)]
+                body["prompt"] = (
+                    prompt + "\nEdit only the region indicated by the second reference image mask. "
+                    "The third reference is the isolated selected object. Preserve every pixel outside "
+                    "the selected region and blend the edited object naturally into the original image."
+                )
             base = os.environ.get("ARK_BASE_URL", DEFAULT_BASE).rstrip("/")
             images = []
             usage: dict[str, int] = {}

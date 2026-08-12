@@ -180,7 +180,7 @@ def run_sam_segment(request_data: dict) -> dict:
     width, height = [int(value) for value in dimensions.split("x")]
     body = {
         "image_url": image_data_uri(name),
-        "prompts": [{"x": x * width, "y": y * height, "label": 1}],
+        "prompts": [{"x": round(x * width), "y": round(y * height), "label": 1}],
     }
     request = urllib.request.Request(
         "https://fal.run/fal-ai/sam2/image",

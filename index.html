@@ -211,7 +211,6 @@
     });
     async function runDecompose(mode) {
       if (!selectedInputs.length) { showError(new Error('Select or upload one image first')); return; }
-      if (mode === 'separate' && !window.confirm('This detects up to 16 elements and makes one paid Seedream Pro call per element. Continue?')) return;
       submit.disabled = true;
       status.className = '';
       status.textContent = mode === 'sheet' ? 'Creating one element sheet with Seedream Pro…' : 'Detecting elements, then isolating each with Seedream Pro… this may take several minutes.';

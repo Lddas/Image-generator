@@ -75,7 +75,7 @@
       <div class="attachments" id="attachments"></div>
       <div class="sam-editor" id="samEditor" hidden>
         <p class="sam-help">Click the element to select it. SAM runs locally; the selected cutout becomes the prompt input.</p>
-        <div class="sam-modes"><button id="samPointMode" class="active" type="button">Point select</button><button id="samBoxMode" type="button">Box select</button></div>
+        <div class="sam-modes"><button id="samPointMode" class="active" type="button">Point select</button><button id="samBoxMode" type="button">Box select</button><button id="samClear" type="button">Clear mask</button><button id="samDeselect" type="button">Deselect image</button><button id="samClose" type="button">Close SAM</button></div>
         <label>Segmentation model<select id="samModel"><option value="sam2">SAM2 · fast</option><option value="sam3">SAM3 · latest</option></select></label>
         <div class="sam-stage" id="samStage"><span>Select or upload one image first.</span></div>
         <label>Tampon / edge expansion <select id="samTampon"><option value="0">0 px · precise</option><option value="2">2 px</option><option value="4" selected>4 px</option><option value="8">8 px</option><option value="16">16 px</option><option value="32">32 px</option></select></label>
@@ -165,6 +165,7 @@
         attachment.innerHTML = `<img src="${image.url}" alt="Selected input" /><span>${image.display_name || image.name}</span><button type="button" aria-label="Remove input image">×</button>`;
         attachment.querySelector('button').addEventListener('click', () => {
           selectedInputs = selectedInputs.filter((item) => item.name !== image.name);
+          window.samSelection = null;
           renderInputs();
         });
         host.append(attachment);
@@ -233,6 +234,29 @@
     document.getElementById('sheetButton').addEventListener('click', () => runDecompose('sheet'));
     document.getElementById('samPointMode').addEventListener('click', () => setSamMode('point'));
     document.getElementById('samBoxMode').addEventListener('click', () => setSamMode('box'));
+    document.getElementById('samClear').addEventListener('click', () => {
+      window.samSelection = null;
+      const source = selectedInputs[0];
+      document.getElementById('samStage').innerHTML = source ? `<img class="sam-source" src="${source.url}" alt="Click or box-select an element" />` : '<span>Select or upload one image first.</span>';
+      status.className = '';
+      status.textContent = source ? 'Mask cleared. Select another element.' : '';
+    });
+    document.getElementById('samDeselect').addEventListener('click', () => {
+      window.samSelection = null;
+      selectedInputs = [];
+      renderInputs();
+      document.getElementById('samStage').innerHTML = '<span>Select or upload one image first.</span>';
+      status.className = '';
+      status.textContent = 'Image deselected.';
+    });
+    document.getElementById('samClose').addEventListener('click', () => {
+      window.samSelection = null;
+      samDragStart = null;
+      document.getElementById('samEditor').hidden = true;
+      document.getElementById('prompt').placeholder = 'Describe the image you want…';
+      status.className = '';
+      status.textContent = 'SAM editor closed.';
+    });
     document.getElementById('samModel').addEventListener('change', (event) => {
       const isSam3 = event.target.value === 'sam3';
       document.getElementById('samPointMode').disabled = isSam3;

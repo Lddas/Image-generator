@@ -51,6 +51,10 @@
     figure video { width:100%; display:block; aspect-ratio:16/9; object-fit:cover; background:#050609; }
     .video-gallery { grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); }
     .section-title { margin:30px 0 -8px; color:#bbc1ce; font-size:14px; }
+    .sam-editor[hidden] { display:none; }
+    .sam-stage { position:relative; width:min(720px,100%); min-height:180px; display:grid; place-items:center; overflow:hidden; border:1px solid #343a49; border-radius:12px; background:#090b10; cursor:crosshair; }
+    .sam-stage img { display:block; max-width:100%; max-height:520px; object-fit:contain; }
+    .sam-help { margin:0; color:#9ca3af; font-size:12px; }
     @media (max-width: 720px) { .row { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -61,7 +65,13 @@
     <form id="form">
       <div class="mode-tabs"><button id="imageMode" class="active" type="button">Image</button><button id="videoMode" type="button">Video</button><button id="spriteMode" type="button">Sprite sheet</button></div>
       <div class="input-tools"><button class="uploadbtn" id="uploadButton" type="button">Upload reference image(s)</button><input id="uploadInput" type="file" accept="image/*" multiple hidden /></div>
+      <div class="input-tools"><button class="uploadbtn" id="samButton" type="button">Edit image with SAM</button></div>
       <div class="attachments" id="attachments"></div>
+      <div class="sam-editor" id="samEditor" hidden>
+        <p class="sam-help">Click the element to select it. SAM runs locally; the selected cutout becomes the prompt input.</p>
+        <div class="sam-stage" id="samStage"><span>Select or upload one image first.</span></div>
+        <label>Tampon / edge expansion <select id="samTampon"><option value="0">0 px · precise</option><option value="2">2 px</option><option value="4" selected>4 px</option><option value="8">8 px</option><option value="16">16 px</option><option value="32">32 px</option></select></label>
+      </div>
       <label>Prompt<textarea id="prompt" required autofocus placeholder="Describe what you want…"></textarea></label>
       <div class="row image-fields" id="imageFields">
         <label>Model<select id="model"><option value="dola-seedream-5-0-pro-260628">Seedream 5.0 Pro</option><option value="seedream-5-0-lite-260128">Seedream 5.0 Lite</option></select></label>
@@ -177,6 +187,38 @@
     document.getElementById('imageMode').addEventListener('click', () => setMode('image'));
     document.getElementById('videoMode').addEventListener('click', () => setMode('video'));
     document.getElementById('spriteMode').addEventListener('click', () => setMode('sprite'));
+    document.getElementById('samButton').addEventListener('click', () => {
+      if (!selectedInputs.length) { showError(new Error('Select or upload one image first')); return; }
+      setMode('image');
+      const editor = document.getElementById('samEditor');
+      editor.hidden = !editor.hidden;
+      document.getElementById('samStage').innerHTML = editor.hidden ? '' : `<img src="${selectedInputs[0].url}" alt="Click an element to select it" />`;
+      if (!editor.hidden) {
+        document.getElementById('prompt').placeholder = 'Describe how to change the selected element…';
+        status.textContent = 'Click the element you want to edit.';
+      }
+    });
+    document.getElementById('samStage').addEventListener('click', async (event) => {
+      const image = event.target.closest('img');
+      if (!image || !selectedInputs.length) return;
+      const box = image.getBoundingClientRect();
+      status.className = '';
+      status.textContent = 'SAM is selecting the clicked element locally… first use may take a minute.';
+      try {
+        const response = await fetch('/api/segment/click', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({input_image:selectedInputs[0].name, x:(event.clientX-box.left)/box.width, y:(event.clientY-box.top)/box.height, tampon:Number(document.getElementById('samTampon').value)})
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || 'SAM selection failed');
+        selectedInputs = [data.segment];
+        renderInputs();
+        document.getElementById('samStage').innerHTML = `<img src="${data.segment.url}" alt="SAM selected element" />`;
+        document.getElementById('samEditor').hidden = true;
+        status.textContent = `Element selected with local SAM · ${data.segment.tampon}px tampon. Enter the change prompt, then Generate image.`;
+        document.getElementById('prompt').focus();
+      } catch (error) { showError(error); }
+    });
     document.getElementById('uploadButton').addEventListener('click', () => document.getElementById('uploadInput').click());
     document.getElementById('uploadInput').addEventListener('change', async (event) => {
       const files = [...(event.target.files || [])];

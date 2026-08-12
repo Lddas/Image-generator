@@ -5,6 +5,7 @@ outputs/*
 inputs/*
 videos/*
 sprites/*
+segments/*
 __pycache__/
 *.pyc
 .DS_Store

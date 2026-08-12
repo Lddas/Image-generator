@@ -9,6 +9,9 @@ Uploaded references are saved under `inputs/`, generated videos under `videos/`,
 and sprite sheets plus JSON metadata under `sprites/`. These folders are created
 automatically and ignored by Git.
 
+“Edit image with SAM” uses fal.ai SAM2: select/upload an image, click an object,
+choose the tampon (mask-edge expansion), then prompt an edit using that cutout.
+
 ## Start
 
 ```bash
@@ -32,13 +35,15 @@ seedream-image-generator/
 ├── inputs/              # created automatically for uploaded input images
 ├── outputs/             # generated images
 ├── videos/              # generated Seedance MP4 files
-└── sprites/             # sprite-sheet PNG and JSON metadata
+├── sprites/             # sprite-sheet PNG and JSON metadata
+└── segments/            # transparent fal.ai SAM2 selections
 ```
 
 ## Configuration
 
 The server reads `env` from the repository root—the same folder as `server.py`.
-It needs either `ARK_API_KEY` or `SEEDANCE_API_KEY`.
+It needs either `ARK_API_KEY` or `SEEDANCE_API_KEY`. SAM editing also needs
+`FAL_KEY`.
 
 After cloning, create the local credential file from the included template:
 

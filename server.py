@@ -11,6 +11,7 @@ import os
 import re
 import ssl
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -26,6 +27,7 @@ OUTPUTS = ROOT / "outputs"
 INPUTS = ROOT / "inputs"
 VIDEOS = ROOT / "videos"
 SPRITES = ROOT / "sprites"
+SEGMENTS = ROOT / "segments"
 LEDGER = ROOT / ".cost-ledger.json"
 DEFAULT_BASE = "https://ark.ap-southeast.bytepluses.com/api/v3"
 DEFAULT_MODEL = "dola-seedream-5-0-pro-260628"
@@ -61,6 +63,10 @@ PORT = int(os.environ.get("PORT", "8080"))
 
 def api_key() -> str:
     return os.environ.get("ARK_API_KEY") or os.environ.get("SEEDANCE_API_KEY") or ""
+
+
+def fal_key() -> str:
+    return os.environ.get("PLAYSTUDIO_FAL_KEY") or os.environ.get("FAL_KEY") or os.environ.get("FAL_API_KEY") or ""
 
 
 def redact(text: str) -> str:
@@ -134,15 +140,76 @@ def download_image(item: dict, index: int) -> dict:
 
 
 def image_data_uri(name: str) -> str:
-    requested = Path(name)
-    safe_name = requested.name
-    folder = INPUTS if requested.parts[:1] == ("inputs",) else OUTPUTS
-    path = folder / safe_name
-    if not safe_name or not path.is_file():
-        raise RuntimeError("Selected input image no longer exists")
+    path = selected_image_path(name)
+    safe_name = path.name
     mime = mimetypes.guess_type(safe_name)[0] or "image/png"
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime};base64,{encoded}"
+
+
+def selected_image_path(name: str) -> Path:
+    requested = Path(name)
+    if requested.parts[:1] == ("inputs",):
+        folder = INPUTS
+    elif requested.parts[:1] == ("segments",):
+        folder = SEGMENTS
+    else:
+        folder = OUTPUTS
+    path = folder / requested.name
+    if not requested.name or not path.is_file():
+        raise RuntimeError("Selected input image no longer exists")
+    return path
+
+
+def run_sam_segment(request_data: dict) -> dict:
+    name = str(request_data.get("input_image") or "")
+    source = selected_image_path(name)
+    x = max(0.0, min(1.0, float(request_data.get("x", 0.5))))
+    y = max(0.0, min(1.0, float(request_data.get("y", 0.5))))
+    tampon = max(0, min(64, int(request_data.get("tampon") or 0)))
+    key = fal_key()
+    if not key:
+        raise RuntimeError("fal.ai key missing — set FAL_KEY in env")
+    SEGMENTS.mkdir(parents=True, exist_ok=True)
+    output_name = f"sam_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:6]}.png"
+    destination = SEGMENTS / output_name
+    dimensions = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", str(source)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    width, height = [int(value) for value in dimensions.split("x")]
+    body = {
+        "image_url": image_data_uri(name),
+        "prompts": [{"x": x * width, "y": y * height, "label": 1}],
+    }
+    request = urllib.request.Request(
+        "https://fal.run/fal-ai/sam2/image",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": f"Key {key}", "Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120, context=ssl.create_default_context()) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        raise RuntimeError(f"fal.ai SAM2 HTTP {exc.code}: {redact(detail)[:500]}") from None
+    masks = payload.get("masks") or []
+    mask_url = ((masks[0] or {}).get("url") if masks else "") or ((payload.get("image") or {}).get("url") or "")
+    if not mask_url:
+        raise RuntimeError("fal.ai SAM2 returned no mask")
+    with tempfile.TemporaryDirectory(prefix="fal-sam-") as tmp:
+        mask_path = Path(tmp) / "mask.png"
+        with urllib.request.urlopen(urllib.request.Request(mask_url, headers={"User-Agent": "SeedreamLocal/1.0"}), timeout=120) as response:
+            mask_path.write_bytes(response.read())
+        alpha_filter = f"format=gray,scale={width}:{height}"
+        if tampon:
+            alpha_filter += "," + ",".join(["dilation"] * tampon)
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(source), "-i", str(mask_path), "-filter_complex", f"[1:v]{alpha_filter}[a];[0:v][a]alphamerge", "-frames:v", "1", str(destination)],
+            check=True, capture_output=True,
+        )
+    return {"name": f"segments/{output_name}", "display_name": output_name, "url": f"/segments/{output_name}", "tampon": tampon, "provider": "fal.ai SAM2", "width": width, "height": height}
 
 
 def find_video_url(value) -> str:
@@ -328,7 +395,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/api/health":
-            self._json(200, {"ok": True, "keyConfigured": bool(api_key())})
+            self._json(200, {"ok": True, "keyConfigured": bool(api_key()), "falConfigured": bool(fal_key())})
             return
         if self.path == "/api/images":
             OUTPUTS.mkdir(exist_ok=True)
@@ -356,6 +423,11 @@ class Handler(SimpleHTTPRequestHandler):
                 reverse=True,
             )
             self._json(200, {"ok": True, "sprites": [{"name": path.name, "url": f"/sprites/{path.name}"} for path in files]})
+            return
+        if self.path == "/api/segments":
+            SEGMENTS.mkdir(exist_ok=True)
+            files = sorted((path for path in SEGMENTS.glob("*.png") if path.is_file()), key=lambda path: path.stat().st_mtime, reverse=True)
+            self._json(200, {"ok": True, "segments": [{"name": f"segments/{path.name}", "display_name": path.name, "url": f"/segments/{path.name}"} for path in files]})
             return
         if self.path == "/api/cost":
             self._json(200, {"ok": True, **cost_summary()})
@@ -450,6 +522,22 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 self._json(502, {"ok": False, "error": redact(str(exc))})
             return
+        if parsed_path.path == "/api/segment/click":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                request_data = json.loads(self.rfile.read(length) or b"{}")
+                self._json(200, {"ok": True, "segment": run_sam_segment(request_data)})
+            except subprocess.TimeoutExpired:
+                self._json(504, {"ok": False, "error": "SAM timed out"})
+            except subprocess.CalledProcessError as exc:
+                detail = exc.stderr or exc.stdout or b"SAM failed"
+                if isinstance(detail, bytes):
+                    detail = detail.decode("utf-8", errors="replace")
+                detail = detail[-800:]
+                self._json(502, {"ok": False, "error": redact(detail)})
+            except Exception as exc:
+                self._json(502, {"ok": False, "error": redact(str(exc))})
+            return
         if self.path != "/api/generate":
             self._json(404, {"ok": False, "error": "Not found"})
             return
@@ -512,6 +600,7 @@ if __name__ == "__main__":
     INPUTS.mkdir(exist_ok=True)
     VIDEOS.mkdir(exist_ok=True)
     SPRITES.mkdir(exist_ok=True)
+    SEGMENTS.mkdir(exist_ok=True)
     print(f"Seedream + Seedance generator: http://127.0.0.1:{PORT}")
     print(f"Outputs: {OUTPUTS}")
     print(f"API key: {'configured' if api_key() else 'MISSING'}")

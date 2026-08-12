@@ -167,6 +167,9 @@ def run_sam_segment(request_data: dict) -> dict:
     x = max(0.0, min(1.0, float(request_data.get("x", 0.5))))
     y = max(0.0, min(1.0, float(request_data.get("y", 0.5))))
     box = request_data.get("box") if isinstance(request_data.get("box"), dict) else None
+    sam_model = "sam3" if str(request_data.get("sam_model") or "sam2").lower() == "sam3" else "sam2"
+    if sam_model == "sam3" and not box:
+        raise RuntimeError("fal.ai SAM3 requires Box select; use SAM2 for point selection")
     tampon = max(0, min(64, int(request_data.get("tampon") or 0)))
     key = fal_key()
     if not key:
@@ -189,9 +192,10 @@ def run_sam_segment(request_data: dict) -> dict:
         y2 = round(max(0.0, min(1.0, float(box.get("y2", 1)))) * height)
         body["box_prompts"] = [{"x_min": min(x1, x2), "y_min": min(y1, y2), "x_max": max(x1, x2), "y_max": max(y1, y2)}]
     else:
-        body["prompts"] = [{"x": round(x * width), "y": round(y * height), "label": 1}]
+        prompt = {"x": round(x * width), "y": round(y * height), "label": 1}
+        body["point_prompts" if sam_model == "sam3" else "prompts"] = [prompt]
     request = urllib.request.Request(
-        "https://fal.run/fal-ai/sam2/image",
+        "https://fal.run/fal-ai/sam-3/image" if sam_model == "sam3" else "https://fal.run/fal-ai/sam2/image",
         data=json.dumps(body).encode("utf-8"),
         headers={"Authorization": f"Key {key}", "Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
@@ -201,11 +205,14 @@ def run_sam_segment(request_data: dict) -> dict:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        raise RuntimeError(f"fal.ai SAM2 HTTP {exc.code}: {redact(detail)[:500]}") from None
+        raise RuntimeError(f"fal.ai {sam_model.upper()} HTTP {exc.code}: {redact(detail)[:500]}") from None
     masks = payload.get("masks") or []
-    mask_url = ((masks[0] or {}).get("url") if masks else "") or ((payload.get("image") or {}).get("url") or "")
+    first_mask = masks[0] if masks else ""
+    mask_url = first_mask if isinstance(first_mask, str) else ((first_mask or {}).get("url") if isinstance(first_mask, dict) else "")
+    image_result = payload.get("image") or ""
+    mask_url = mask_url or (image_result if isinstance(image_result, str) else ((image_result or {}).get("url") if isinstance(image_result, dict) else ""))
     if not mask_url:
-        raise RuntimeError("fal.ai SAM2 returned no mask")
+        raise RuntimeError(f"fal.ai {sam_model.upper()} returned no mask")
     with tempfile.TemporaryDirectory(prefix="fal-sam-") as tmp:
         mask_path = Path(tmp) / "mask.png"
         with urllib.request.urlopen(urllib.request.Request(mask_url, headers={"User-Agent": "SeedreamLocal/1.0"}), timeout=120) as response:
@@ -222,7 +229,7 @@ def run_sam_segment(request_data: dict) -> dict:
         "name": f"segments/{output_name}", "display_name": output_name,
         "url": f"/segments/{output_name}", "mask_url": f"/segments/{mask_name}",
         "source_name": name, "source_url": f"/{'inputs' if Path(name).parts[:1] == ('inputs',) else 'outputs'}/{Path(name).name}",
-        "tampon": tampon, "selection_mode": "box" if box else "point", "provider": "fal.ai SAM2", "width": width, "height": height,
+        "tampon": tampon, "selection_mode": "box" if box else "point", "sam_model": sam_model, "provider": f"fal.ai {sam_model.upper()}", "width": width, "height": height,
     }
 
 

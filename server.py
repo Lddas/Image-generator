@@ -166,6 +166,7 @@ def run_sam_segment(request_data: dict) -> dict:
     source = selected_image_path(name)
     x = max(0.0, min(1.0, float(request_data.get("x", 0.5))))
     y = max(0.0, min(1.0, float(request_data.get("y", 0.5))))
+    box = request_data.get("box") if isinstance(request_data.get("box"), dict) else None
     tampon = max(0, min(64, int(request_data.get("tampon") or 0)))
     key = fal_key()
     if not key:
@@ -180,10 +181,15 @@ def run_sam_segment(request_data: dict) -> dict:
         check=True, capture_output=True, text=True,
     ).stdout.strip()
     width, height = [int(value) for value in dimensions.split("x")]
-    body = {
-        "image_url": image_data_uri(name),
-        "prompts": [{"x": round(x * width), "y": round(y * height), "label": 1}],
-    }
+    body = {"image_url": image_data_uri(name)}
+    if box:
+        x1 = round(max(0.0, min(1.0, float(box.get("x1", 0)))) * width)
+        y1 = round(max(0.0, min(1.0, float(box.get("y1", 0)))) * height)
+        x2 = round(max(0.0, min(1.0, float(box.get("x2", 1)))) * width)
+        y2 = round(max(0.0, min(1.0, float(box.get("y2", 1)))) * height)
+        body["box_prompts"] = [{"x_min": min(x1, x2), "y_min": min(y1, y2), "x_max": max(x1, x2), "y_max": max(y1, y2)}]
+    else:
+        body["prompts"] = [{"x": round(x * width), "y": round(y * height), "label": 1}]
     request = urllib.request.Request(
         "https://fal.run/fal-ai/sam2/image",
         data=json.dumps(body).encode("utf-8"),
@@ -216,8 +222,85 @@ def run_sam_segment(request_data: dict) -> dict:
         "name": f"segments/{output_name}", "display_name": output_name,
         "url": f"/segments/{output_name}", "mask_url": f"/segments/{mask_name}",
         "source_name": name, "source_url": f"/{'inputs' if Path(name).parts[:1] == ('inputs',) else 'outputs'}/{Path(name).name}",
-        "tampon": tampon, "provider": "fal.ai SAM2", "width": width, "height": height,
+        "tampon": tampon, "selection_mode": "box" if box else "point", "provider": "fal.ai SAM2", "width": width, "height": height,
     }
+
+
+def detect_elements(name: str, max_parts: int = 16) -> tuple[list[dict], str]:
+    model = os.environ.get("ARK_VISION_MODEL", "dola-seed-2-1-turbo-260628")
+    instruction = (
+        f"Find up to {max_parts} distinct reusable visual elements. Return ONLY a JSON array where each item is "
+        "{\"label\":string,\"bbox\":{\"x1\":integer,\"y1\":integer,\"x2\":integer,\"y2\":integer}}. "
+        "Coordinates are 0..999. Include characters, props and meaningful background elements; do not duplicate elements."
+    )
+    payload = post_json(
+        f"{os.environ.get('ARK_BASE_URL', DEFAULT_BASE).rstrip('/')}/chat/completions",
+        {"model": model, "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": image_data_uri(name)}},
+            {"type": "text", "text": instruction},
+        ]}], "temperature": 0.1, "max_tokens": 1800},
+        timeout=120,
+    )
+    content = (((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+    if isinstance(content, list):
+        content = "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
+    match = re.search(r"\[[\s\S]*\]", str(content))
+    raw_parts = json.loads(match.group(0) if match else str(content))
+    parts = []
+    for item in raw_parts[:max_parts]:
+        bbox = item.get("bbox") if isinstance(item, dict) else None
+        if isinstance(bbox, dict) and all(key in bbox for key in ("x1", "y1", "x2", "y2")):
+            parts.append({"label": str(item.get("label") or f"element {len(parts)+1}"), "bbox": bbox})
+    if not parts:
+        raise RuntimeError("The vision model found no separable elements")
+    return parts, model
+
+
+def crop_element(source: Path, bbox: dict, destination: Path) -> None:
+    dimensions = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", str(source)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    width, height = [int(value) for value in dimensions.split("x")]
+    x1 = max(0, min(width - 1, round(float(bbox["x1"]) / 999 * width)))
+    y1 = max(0, min(height - 1, round(float(bbox["y1"]) / 999 * height)))
+    x2 = max(x1 + 1, min(width, round(float(bbox["x2"]) / 999 * width)))
+    y2 = max(y1 + 1, min(height, round(float(bbox["y2"]) / 999 * height)))
+    subprocess.run(["ffmpeg", "-y", "-i", str(source), "-vf", f"crop={x2-x1}:{y2-y1}:{x1}:{y1}", "-frames:v", "1", str(destination)], check=True, capture_output=True)
+
+
+def decompose_image(request_data: dict) -> dict:
+    name = str(request_data.get("input_image") or "")
+    source = selected_image_path(name)
+    mode = str(request_data.get("mode") or "separate")
+    base = os.environ.get("ARK_BASE_URL", DEFAULT_BASE).rstrip("/")
+    if mode == "sheet":
+        payload = post_json(f"{base}/images/generations", {
+            "model": DEFAULT_MODEL,
+            "prompt": "Identify every distinct element and place all of them separately on one pure white background in a neat grid. No overlap, no original scene background. Preserve each element's complete shape, art style and proportions.",
+            "image": image_data_uri(name), "size": "2K", "response_format": "url", "output_format": "png", "watermark": False,
+        })
+        items = payload.get("data") or []
+        images = [download_image(item, index) for index, item in enumerate(items)]
+        append_cost(DEFAULT_MODEL, items, payload.get("usage") or {})
+        return {"images": images, "parts": [], "model": DEFAULT_MODEL, "mode": "sheet", "cost": cost_summary()}
+    parts, vision_model = detect_elements(name, max(2, min(20, int(request_data.get("max_parts") or 16))))
+    images = []
+    with tempfile.TemporaryDirectory(prefix="decompose-") as tmp:
+        for index, part in enumerate(parts):
+            crop = Path(tmp) / f"part-{index}.png"
+            crop_element(source, part["bbox"], crop)
+            crop_uri = "data:image/png;base64," + base64.b64encode(crop.read_bytes()).decode("ascii")
+            payload = post_json(f"{base}/images/generations", {
+                "model": DEFAULT_MODEL,
+                "prompt": f"Extract only the {part['label']} as one complete isolated game asset on a transparent background. Reconstruct occluded edges naturally. Preserve exact style, colors and proportions. No other objects, text, ground, backdrop or framing.",
+                "image": crop_uri, "size": "2K", "response_format": "url", "output_format": "png", "watermark": False,
+            })
+            items = payload.get("data") or []
+            append_cost(DEFAULT_MODEL, items, payload.get("usage") or {})
+            for item in items:
+                asset = download_image(item, len(images)); asset["label"] = part["label"]; images.append(asset)
+    return {"images": images, "parts": parts, "model": DEFAULT_MODEL, "vision_model": vision_model, "mode": "separate", "cost": cost_summary()}
 
 
 def find_video_url(value) -> str:
@@ -543,6 +626,14 @@ class Handler(SimpleHTTPRequestHandler):
                     detail = detail.decode("utf-8", errors="replace")
                 detail = detail[-800:]
                 self._json(502, {"ok": False, "error": redact(detail)})
+            except Exception as exc:
+                self._json(502, {"ok": False, "error": redact(str(exc))})
+            return
+        if parsed_path.path == "/api/decompose":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                request_data = json.loads(self.rfile.read(length) or b"{}")
+                self._json(200, {"ok": True, **decompose_image(request_data)})
             except Exception as exc:
                 self._json(502, {"ok": False, "error": redact(str(exc))})
             return

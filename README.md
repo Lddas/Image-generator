@@ -11,6 +11,9 @@ automatically and ignored by Git.
 
 “Edit image with SAM” uses fal.ai SAM2: select/upload an image, click an object,
 choose the tampon (mask-edge expansion), then prompt an edit using that cutout.
+Point and draggable bounding-box selection are supported. “Decompose to assets”
+uses a vision model to locate elements and one Seedream Pro call per element;
+“Element sheet” creates one white-background sheet in a single call.
 
 ## Start
 

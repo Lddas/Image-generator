@@ -56,6 +56,10 @@
     .sam-stage img { display:block; max-width:100%; max-height:520px; object-fit:contain; }
     .sam-stage .sam-source { position:relative; z-index:1; }
     .sam-stage .sam-mask { position:absolute; z-index:2; max-width:100%; max-height:520px; opacity:.58; mix-blend-mode:screen; filter:sepia(1) saturate(8) hue-rotate(135deg); pointer-events:none; }
+    .sam-box { position:absolute; z-index:4; border:2px solid #ff6b35; background:rgba(255,107,53,.12); pointer-events:none; }
+    .sam-modes { display:flex; gap:7px; }
+    .sam-modes button { padding:8px 13px; background:#262b36; color:#bbc1ce; font-size:12px; }
+    .sam-modes button.active { background:#ff6b35; color:#fff; }
     .sam-help { margin:0; color:#9ca3af; font-size:12px; }
     @media (max-width: 720px) { .row { grid-template-columns:1fr; } }
   </style>
@@ -67,10 +71,11 @@
     <form id="form">
       <div class="mode-tabs"><button id="imageMode" class="active" type="button">Image</button><button id="videoMode" type="button">Video</button><button id="spriteMode" type="button">Sprite sheet</button></div>
       <div class="input-tools"><button class="uploadbtn" id="uploadButton" type="button">Upload reference image(s)</button><input id="uploadInput" type="file" accept="image/*" multiple hidden /></div>
-      <div class="input-tools"><button class="uploadbtn" id="samButton" type="button">Edit image with SAM</button></div>
+      <div class="input-tools"><button class="uploadbtn" id="samButton" type="button">Edit image with SAM</button><button class="uploadbtn" id="decomposeButton" type="button">Decompose to assets</button><button class="uploadbtn" id="sheetButton" type="button">Element sheet</button></div>
       <div class="attachments" id="attachments"></div>
       <div class="sam-editor" id="samEditor" hidden>
         <p class="sam-help">Click the element to select it. SAM runs locally; the selected cutout becomes the prompt input.</p>
+        <div class="sam-modes"><button id="samPointMode" class="active" type="button">Point select</button><button id="samBoxMode" type="button">Box select</button></div>
         <div class="sam-stage" id="samStage"><span>Select or upload one image first.</span></div>
         <label>Tampon / edge expansion <select id="samTampon"><option value="0">0 px · precise</option><option value="2">2 px</option><option value="4" selected>4 px</option><option value="8">8 px</option><option value="16">16 px</option><option value="32">32 px</option></select></label>
       </div>
@@ -125,6 +130,8 @@
     let expandedName = '';
     let selectedInputs = [];
     let selectedVideo = null;
+    let samSelectMode = 'point';
+    let samDragStart = null;
     let clickTimer = null;
 
     function renderCost(cost) {
@@ -200,24 +207,94 @@
         status.textContent = 'Click the element you want to edit.';
       }
     });
+    async function runDecompose(mode) {
+      if (!selectedInputs.length) { showError(new Error('Select or upload one image first')); return; }
+      if (mode === 'separate' && !window.confirm('This detects up to 16 elements and makes one paid Seedream Pro call per element. Continue?')) return;
+      submit.disabled = true;
+      status.className = '';
+      status.textContent = mode === 'sheet' ? 'Creating one element sheet with Seedream Pro…' : 'Detecting elements, then isolating each with Seedream Pro… this may take several minutes.';
+      try {
+        const response = await fetch('/api/decompose', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({input_image:selectedInputs[0].name, mode, max_parts:16})
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || 'Decomposition failed');
+        data.images.forEach((image) => addImage(image));
+        renderCost(data.cost);
+        status.textContent = mode === 'sheet'
+          ? 'Created one element sheet. Saved to outputs/.'
+          : `Decomposed into ${data.images.length}/${data.parts.length} assets using ${data.vision_model} + ${data.model}.`;
+      } catch (error) { showError(error); }
+      finally { submit.disabled = false; }
+    }
+    document.getElementById('decomposeButton').addEventListener('click', () => runDecompose('separate'));
+    document.getElementById('sheetButton').addEventListener('click', () => runDecompose('sheet'));
+    document.getElementById('samPointMode').addEventListener('click', () => setSamMode('point'));
+    document.getElementById('samBoxMode').addEventListener('click', () => setSamMode('box'));
+    function setSamMode(next) {
+      samSelectMode = next;
+      document.getElementById('samPointMode').classList.toggle('active', next === 'point');
+      document.getElementById('samBoxMode').classList.toggle('active', next === 'box');
+      document.querySelector('#samEditor .sam-help').textContent = next === 'point'
+        ? 'Click the element to select it.'
+        : 'Drag a box tightly around the element for better control.';
+    }
+    async function requestSam(selection) {
+      status.className = '';
+      status.textContent = 'fal.ai SAM2 is creating the selection mask…';
+      const response = await fetch('/api/segment/click', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({input_image:selectedInputs[0].name, tampon:Number(document.getElementById('samTampon').value), ...selection})
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || 'SAM selection failed');
+      window.samSelection = data.segment;
+      document.getElementById('samStage').innerHTML = `<img class="sam-source" src="${data.segment.source_url}" alt="Source image" /><img class="sam-mask" src="${data.segment.mask_url}" alt="SAM mask overlay" />`;
+      status.textContent = `Element selected with fal.ai SAM2 (${data.segment.selection_mode}) · ${data.segment.tampon}px tampon. The colored overlay is the edit mask.`;
+      document.getElementById('prompt').focus();
+    }
     document.getElementById('samStage').addEventListener('click', async (event) => {
+      if (samSelectMode !== 'point') return;
       const image = event.target.closest('img');
       if (!image || !selectedInputs.length) return;
       const box = image.getBoundingClientRect();
-      status.className = '';
-      status.textContent = 'SAM is selecting the clicked element locally… first use may take a minute.';
       try {
-        const response = await fetch('/api/segment/click', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({input_image:selectedInputs[0].name, x:(event.clientX-box.left)/box.width, y:(event.clientY-box.top)/box.height, tampon:Number(document.getElementById('samTampon').value)})
-        });
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(data.error || 'SAM selection failed');
-        window.samSelection = data.segment;
-        document.getElementById('samStage').innerHTML = `<img class="sam-source" src="${data.segment.source_url}" alt="Source image" /><img class="sam-mask" src="${data.segment.mask_url}" alt="SAM mask overlay" />`;
-        status.textContent = `Element selected with fal.ai SAM2 · ${data.segment.tampon}px tampon. The colored overlay is the edit mask.`;
-        document.getElementById('prompt').focus();
+        await requestSam({x:(event.clientX-box.left)/box.width, y:(event.clientY-box.top)/box.height});
       } catch (error) { showError(error); }
+    });
+    document.getElementById('samStage').addEventListener('pointerdown', (event) => {
+      if (samSelectMode !== 'box') return;
+      const image = event.target.closest('img.sam-source, img:not(.sam-mask)');
+      if (!image || !selectedInputs.length) return;
+      event.preventDefault();
+      const bounds = image.getBoundingClientRect();
+      samDragStart = {x:event.clientX, y:event.clientY, bounds};
+      event.currentTarget.setPointerCapture(event.pointerId);
+      const marker = document.createElement('div'); marker.className = 'sam-box'; marker.id = 'samBoxMarker'; event.currentTarget.append(marker);
+    });
+    document.getElementById('samStage').addEventListener('pointermove', (event) => {
+      if (!samDragStart) return;
+      const marker = document.getElementById('samBoxMarker');
+      const b = samDragStart.bounds;
+      const x1 = Math.max(b.left, Math.min(b.right, samDragStart.x));
+      const y1 = Math.max(b.top, Math.min(b.bottom, samDragStart.y));
+      const x2 = Math.max(b.left, Math.min(b.right, event.clientX));
+      const y2 = Math.max(b.top, Math.min(b.bottom, event.clientY));
+      Object.assign(marker.style, {left:(Math.min(x1,x2)-b.left)+'px', top:(Math.min(y1,y2)-b.top)+'px', width:Math.abs(x2-x1)+'px', height:Math.abs(y2-y1)+'px'});
+    });
+    document.getElementById('samStage').addEventListener('pointerup', async (event) => {
+      if (!samDragStart) return;
+      const start = samDragStart; samDragStart = null;
+      const b = start.bounds;
+      document.getElementById('samBoxMarker')?.remove();
+      const x1 = Math.max(b.left, Math.min(b.right, start.x));
+      const y1 = Math.max(b.top, Math.min(b.bottom, start.y));
+      const x2 = Math.max(b.left, Math.min(b.right, event.clientX));
+      const y2 = Math.max(b.top, Math.min(b.bottom, event.clientY));
+      if (Math.abs(x2-x1) < 8 || Math.abs(y2-y1) < 8) { showError(new Error('Draw a larger box around the element')); return; }
+      try { await requestSam({box:{x1:(Math.min(x1,x2)-b.left)/b.width, y1:(Math.min(y1,y2)-b.top)/b.height, x2:(Math.max(x1,x2)-b.left)/b.width, y2:(Math.max(y1,y2)-b.top)/b.height}}); }
+      catch (error) { showError(error); }
     });
     document.getElementById('uploadButton').addEventListener('click', () => document.getElementById('uploadInput').click());
     document.getElementById('uploadInput').addEventListener('change', async (event) => {

@@ -11,7 +11,6 @@ import os
 import re
 import ssl
 import subprocess
-import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -161,6 +160,11 @@ def selected_image_path(name: str) -> Path:
     return path
 
 
+def selected_image_url(name: str) -> str:
+    prefix = "inputs" if Path(name).parts[:1] == ("inputs",) else "segments" if Path(name).parts[:1] == ("segments",) else "outputs"
+    return f"/{prefix}/{Path(name).name}"
+
+
 def run_sam_segment(request_data: dict) -> dict:
     name = str(request_data.get("input_image") or "")
     source = selected_image_path(name)
@@ -176,14 +180,10 @@ def run_sam_segment(request_data: dict) -> dict:
         raise RuntimeError("fal.ai key missing — set FAL_KEY in env")
     SEGMENTS.mkdir(parents=True, exist_ok=True)
     output_name = f"sam_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:6]}.png"
-    destination = SEGMENTS / output_name
     mask_name = f"{Path(output_name).stem}_mask.png"
     saved_mask = SEGMENTS / mask_name
-    dimensions = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", str(source)],
-        check=True, capture_output=True, text=True,
-    ).stdout.strip()
-    width, height = [int(value) for value in dimensions.split("x")]
+    width = max(1, int(request_data.get("width") or 1))
+    height = max(1, int(request_data.get("height") or 1))
     body = {"image_url": image_data_uri(name)}
     if box:
         x1 = round(max(0.0, min(1.0, float(box.get("x1", 0)))) * width)
@@ -213,22 +213,12 @@ def run_sam_segment(request_data: dict) -> dict:
     mask_url = mask_url or (image_result if isinstance(image_result, str) else ((image_result or {}).get("url") if isinstance(image_result, dict) else ""))
     if not mask_url:
         raise RuntimeError(f"fal.ai {sam_model.upper()} returned no mask")
-    with tempfile.TemporaryDirectory(prefix="fal-sam-") as tmp:
-        mask_path = Path(tmp) / "mask.png"
-        with urllib.request.urlopen(urllib.request.Request(mask_url, headers={"User-Agent": "SeedreamLocal/1.0"}), timeout=120) as response:
-            mask_path.write_bytes(response.read())
-        saved_mask.write_bytes(mask_path.read_bytes())
-        alpha_filter = f"format=gray,scale={width}:{height}"
-        if tampon:
-            alpha_filter += "," + ",".join(["dilation"] * tampon)
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(source), "-i", str(mask_path), "-filter_complex", f"[1:v]{alpha_filter}[a];[0:v][a]alphamerge", "-frames:v", "1", str(destination)],
-            check=True, capture_output=True,
-        )
+    with urllib.request.urlopen(urllib.request.Request(mask_url, headers={"User-Agent": "SeedreamLocal/1.0"}), timeout=120) as response:
+        saved_mask.write_bytes(response.read())
     return {
-        "name": f"segments/{output_name}", "display_name": output_name,
-        "url": f"/segments/{output_name}", "mask_url": f"/segments/{mask_name}",
-        "source_name": name, "source_url": f"/{'inputs' if Path(name).parts[:1] == ('inputs',) else 'outputs'}/{Path(name).name}",
+        "name": name, "display_name": Path(name).name,
+        "url": selected_image_url(name), "mask_url": f"/segments/{mask_name}",
+        "source_name": name, "source_url": selected_image_url(name),
         "tampon": tampon, "selection_mode": "box" if box else "point", "sam_model": sam_model, "provider": f"fal.ai {sam_model.upper()}", "width": width, "height": height,
     }
 
@@ -263,50 +253,34 @@ def detect_elements(name: str, max_parts: int = 16) -> tuple[list[dict], str]:
     return parts, model
 
 
-def crop_element(source: Path, bbox: dict, destination: Path) -> None:
-    dimensions = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", str(source)],
-        check=True, capture_output=True, text=True,
-    ).stdout.strip()
-    width, height = [int(value) for value in dimensions.split("x")]
-    x1 = max(0, min(width - 1, round(float(bbox["x1"]) / 999 * width)))
-    y1 = max(0, min(height - 1, round(float(bbox["y1"]) / 999 * height)))
-    x2 = max(x1 + 1, min(width, round(float(bbox["x2"]) / 999 * width)))
-    y2 = max(y1 + 1, min(height, round(float(bbox["y2"]) / 999 * height)))
-    subprocess.run(["ffmpeg", "-y", "-i", str(source), "-vf", f"crop={x2-x1}:{y2-y1}:{x1}:{y1}", "-frames:v", "1", str(destination)], check=True, capture_output=True)
-
-
 def decompose_image(request_data: dict) -> dict:
     name = str(request_data.get("input_image") or "")
-    source = selected_image_path(name)
+    selected_image_path(name)
     mode = str(request_data.get("mode") or "separate")
     base = os.environ.get("ARK_BASE_URL", DEFAULT_BASE).rstrip("/")
     if mode == "sheet":
         payload = post_json(f"{base}/images/generations", {
             "model": DEFAULT_MODEL,
-            "prompt": "Identify every distinct element and place all of them separately on one pure white background in a neat grid. No overlap, no original scene background. Preserve each element's complete shape, art style and proportions.",
+            "prompt": "Create exactly ONE compact Spine-style texture atlas from only the distinct elements visible in the reference. Transparent background. Pack elements tightly with small even gutters, no overlap, no labels, no duplicates, no invented elements, no white canvas and no original scene background. Preserve each element's complete shape, art style and proportions.",
             "image": image_data_uri(name), "size": "2K", "response_format": "url", "output_format": "png", "watermark": False,
         })
-        items = payload.get("data") or []
-        images = [download_image(item, index) for index, item in enumerate(items)]
+        items = (payload.get("data") or [])[:1]
+        images = [download_image(items[0], 0)] if items else []
         append_cost(DEFAULT_MODEL, items, payload.get("usage") or {})
         return {"images": images, "parts": [], "model": DEFAULT_MODEL, "mode": "sheet", "cost": cost_summary()}
     parts, vision_model = detect_elements(name, max(2, min(20, int(request_data.get("max_parts") or 16))))
     images = []
-    with tempfile.TemporaryDirectory(prefix="decompose-") as tmp:
-        for index, part in enumerate(parts):
-            crop = Path(tmp) / f"part-{index}.png"
-            crop_element(source, part["bbox"], crop)
-            crop_uri = "data:image/png;base64," + base64.b64encode(crop.read_bytes()).decode("ascii")
-            payload = post_json(f"{base}/images/generations", {
-                "model": DEFAULT_MODEL,
-                "prompt": f"Extract only the {part['label']} as one complete isolated game asset on a transparent background. Reconstruct occluded edges naturally. Preserve exact style, colors and proportions. No other objects, text, ground, backdrop or framing.",
-                "image": crop_uri, "size": "2K", "response_format": "url", "output_format": "png", "watermark": False,
-            })
-            items = payload.get("data") or []
-            append_cost(DEFAULT_MODEL, items, payload.get("usage") or {})
-            for item in items:
-                asset = download_image(item, len(images)); asset["label"] = part["label"]; images.append(asset)
+    for part in parts:
+        bbox = part["bbox"]
+        payload = post_json(f"{base}/images/generations", {
+            "model": DEFAULT_MODEL,
+            "prompt": f"Extract only the {part['label']} located in normalized box x1={bbox['x1']}, y1={bbox['y1']}, x2={bbox['x2']}, y2={bbox['y2']} (coordinates 0..999) as one complete isolated game asset on a transparent background. Reconstruct occluded edges naturally. Preserve exact style, colors and proportions. No other objects, text, ground, backdrop or framing.",
+            "image": image_data_uri(name), "size": "2K", "response_format": "url", "output_format": "png", "watermark": False,
+        })
+        items = payload.get("data") or []
+        append_cost(DEFAULT_MODEL, items[:1], payload.get("usage") or {})
+        for item in items[:1]:
+            asset = download_image(item, len(images)); asset["label"] = part["label"]; images.append(asset)
     return {"images": images, "parts": parts, "model": DEFAULT_MODEL, "vision_model": vision_model, "mode": "separate", "cost": cost_summary()}
 
 
@@ -671,14 +645,13 @@ class Handler(SimpleHTTPRequestHandler):
             input_image = str(request_data.get("input_image") or "").strip()
             if input_image:
                 body["image"] = image_data_uri(input_image)
-            sam_cutout = str(request_data.get("sam_cutout") or "").strip()
             sam_mask = str(request_data.get("sam_mask") or "").strip()
-            if sam_cutout and sam_mask and input_image:
-                body["image"] = [image_data_uri(input_image), image_data_uri(sam_mask), image_data_uri(sam_cutout)]
+            if sam_mask and input_image:
+                body["image"] = [image_data_uri(input_image), image_data_uri(sam_mask)]
                 body["prompt"] = (
                     prompt + "\nEdit only the region indicated by the second reference image mask. "
-                    "The third reference is the isolated selected object. Preserve every pixel outside "
-                    "the selected region and blend the edited object naturally into the original image."
+                    "Preserve every pixel outside the selected region and blend the edited object "
+                    "naturally into the original image."
                 )
             base = os.environ.get("ARK_BASE_URL", DEFAULT_BASE).rstrip("/")
             images = []
